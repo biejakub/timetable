@@ -1,6 +1,6 @@
 # Timetable proxy (RTT + TfL)
-Proxy server for the TfL dashboard. It fetches departures from RTT and data
-from TfL, applies caching and rate limiting, and exposes JSON for the frontend.
+Local proxy for the dashboard. It fetches departures from RTT and data from
+TfL, applies caching and rate limiting, and serves JSON to the frontend.
 
 ## TL;DR
 - Local, privacy-friendly dashboard for departures near Alexandra Palace.
@@ -10,14 +10,14 @@ from TfL, applies caching and rate limiting, and exposes JSON for the frontend.
 ## Project overview
 This project is a lightweight local dashboard and proxy that aggregates
 real-time departures from RTT and TfL, then renders a simple at-a-glance display
-for a specific routine. The backend enforces caching, rate limits, and security
+for a daily routine. The backend enforces caching, rate limits, and security
 controls, while the frontend polls the proxy and presents arrivals in a clean,
 large-format UI suitable for a wall-mounted tablet or kiosk.
 
 ## Architecture at a glance
 - Frontend (`TfL.html`): static HTML/JS dashboard that polls the proxy.
 - Backend (`rtt_proxy.py`): Flask service that calls RTT and TfL, applies caching,
-  rate limiting, retry/backoff, and enforces compliance checks.
+  rate limiting, retry/backoff, and compliance checks.
 - Optional Redis: shared cache and shared rate limiter for multi-worker setups.
 
 ## Motivation
@@ -25,7 +25,7 @@ Every morning, my wife and I followed the same small ritual: checking how much t
 
 That question sparked the idea for this project. If an app can show real-time departures from nearby stops, why couldn't I build a lightweight, purpose-built display tailored exactly to our routine - especially with a bit of help from AI? What started as a curiosity quickly turned into a working solution.
 
-Today, the project is stable, compliant, and does exactly what it was meant to do, so I'm sharing it publicly for others to adapt to their own needs. In our home, it runs as a local web page on an old tablet, permanently mounted near the door and powered directly (battery removed), always ready at a glance.
+Today, the project is stable, compliant, and does exactly what it was meant to do, so I'm sharing it publicly for others to adapt to their own needs. In our home, it runs as a local web page on an old tablet with the latest Ubuntu LTS on it, permanently mounted near the door and powered directly (battery removed), always ready at a glance.
 
 It's a small project, born from everyday life - and sometimes that's where the best ideas come from.
 
@@ -37,7 +37,7 @@ It's a small project, born from everyday life - and sometimes that's where the b
 ```bash
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install -r requirements.txt
+pip install Flask==3.0.3 requests==2.32.3 python-dotenv==1.0.1 redis==5.0.8
 ```
 
 ## Quick start (local display)
@@ -49,7 +49,7 @@ In another terminal:
 python -m http.server 8000
 ```
 Open `http://localhost:8000/TfL.html` in your browser. If you prefer `file://`,
-set `CORS_ALLOW_NULL_ORIGIN=1`.
+set `CORS_ALLOW_NULL_ORIGIN=1` and add your origin if needed.
 
 ## Configuration (.env)
 Use `.env.example` as a safe template.
@@ -111,7 +111,7 @@ waitress-serve --listen=127.0.0.1:5010 rtt_proxy:app
 
 Run behind a reverse proxy with TLS. If a proxy sets `X-Forwarded-*`, set
 `TRUST_PROXY_HEADERS=1` so `ProxyFix` can read the forwarded scheme and IP.
-Add extra rate limiting on the proxy if needed.
+Add extra rate limiting on the proxy if needed for your network.
 
 If `REDIS_URL` is not set or Redis is unavailable, caching and rate limiting
 fall back to in-memory per process.
@@ -182,7 +182,7 @@ Usage of these data sources is subject to their official terms and conditions:
 
 ## Dependency audit
 ```bash
-pip-audit -r requirements.txt
+pip-audit -r requirements-dev.txt
 ```
 
 ## Tests
