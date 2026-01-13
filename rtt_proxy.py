@@ -220,7 +220,7 @@ class PerKeyLimiter:
             return True, 0
 
 
-_hhy_cache: Dict[str, Tuple[bool, float]] = {}
+_hhy_cache: Dict[str, Tuple[Optional[str], float]] = {}
 _hhy_lock = threading.Lock()
 
 _trains_cache: Optional[CacheEntry] = None
@@ -488,14 +488,14 @@ def prune_hhy_cache(now: float) -> None:
             _hhy_cache.clear()
 
 
-def service_calls_hhy(uid: str, run_date: str) -> bool:
+def service_via(uid: str, run_date: str) -> Optional[str]:
     now = time.time()
     with _hhy_lock:
         cached = _hhy_cache.get(uid)
         if cached and cached[1] > now:
             return cached[0]
 
-    ok = False
+    via: Optional[str] = None
     try:
         parts = run_date.split("-")
         if len(parts) != 3:
@@ -506,6 +506,7 @@ def service_calls_hhy(uid: str, run_date: str) -> bool:
 
         idx_aap: Optional[int] = None
         idx_hhy: Optional[int] = None
+        idx_fpk: Optional[int] = None
 
         for i, loc in enumerate(locs):
             crs = (loc.get("crs") or "").upper()
@@ -513,22 +514,24 @@ def service_calls_hhy(uid: str, run_date: str) -> bool:
                 idx_aap = i
             if crs == "HHY" and idx_hhy is None:
                 idx_hhy = i
+            if crs == "FPK" and idx_fpk is None:
+                idx_fpk = i
 
-        ok = (
-            idx_aap is not None
-            and idx_hhy is not None
-            and idx_hhy > idx_aap
-        )
+        if idx_aap is not None and idx_hhy is not None and idx_hhy > idx_aap:
+            via = "HHY"
+        if idx_aap is not None and idx_fpk is not None and idx_fpk > idx_aap:
+            if via is None:
+                via = "FPK"
     except (UpstreamError, UpstreamRateLimited, MissingConfig) as exc:
         log.warning("HHY check failed: %s", exc)
-        ok = False
+        via = None
     except Exception as exc:
         log.warning("HHY check failed: %s", exc)
-        ok = False
+        via = None
 
     with _hhy_lock:
-        _hhy_cache[uid] = (ok, now + HHY_TTL_SEC)
-    return ok
+        _hhy_cache[uid] = (via, now + HHY_TTL_SEC)
+    return via
 
 
 def build_trains_payload(services_out: List[JsonDict], ttl_sec: int) -> Dict[str, Any]:
@@ -555,7 +558,8 @@ def fetch_trains() -> CacheEntry:
         if not uid or not run_date:
             continue
 
-        if not service_calls_hhy(uid, run_date):
+        via = service_via(uid, run_date)
+        if via is None:
             continue
 
         ld: LocationDetail = s.get("locationDetail") or {}
@@ -584,6 +588,7 @@ def fetch_trains() -> CacheEntry:
                 "operator": s.get("atocName"),
                 "trainId": s.get("trainIdentity"),
                 "cancelled": is_cancelled,
+                "via": via,
             }
         )
 
