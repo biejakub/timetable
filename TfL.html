@@ -59,6 +59,12 @@ body{
   50%{ opacity:1; transform:scale(1.04); }
 }
 
+.attribution{
+  font-size:18px;
+  color:#7d7d7d;
+  padding:0 60px 28px;
+}
+
 .muted{ opacity:.65; }
 .bigmsg{ font-size:34px; opacity:.8; padding:8px 0; }
 </style>
@@ -83,7 +89,7 @@ body{
       <span>Alexandra Palace</span>
       <span id="railStatus" class="pill muted">odświeżanie...</span>
     </div>
-    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington oraz Finsbury Park</div>
+    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington i/lub Finsbury Park</div>
     <div id="railList" class="list muted">Ładowanie danych...</div>
     <div id="railFallback" class="bigmsg muted" style="display:none;">
       Brak danych RTT (sprawdź proxy).
@@ -110,8 +116,12 @@ body{
 
 </div>
 
+<div class="attribution">Powered by TfL Open Data</div>
+
 <script>
-const API_BASE = "http://127.0.0.1:5010";
+const API_BASE = location.hostname
+  ? `${location.protocol}//${location.hostname}:5010`
+  : "http://127.0.0.1:5010";
 const REFRESH_FALLBACK_MS = 60_000;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_ITEMS = 5;
@@ -358,9 +368,12 @@ async function loadRail(){
       .slice(0, MAX_ITEMS)
       .map(s=>{
         const eta = railEta(s);
-        const viaLabel = s.via === "HHY"
-          ? "via Highbury & Islington"
-          : (s.via === "FPK" ? "via Finsbury Park" : "");
+        const viaCodes = Array.isArray(s.via) ? s.via : (s.via ? [s.via] : []);
+        const viaNames = viaCodes.map(code => (
+          code === "HHY" ? "Highbury & Islington"
+          : (code === "FPK" ? "Finsbury Park" : code)
+        ));
+        const viaLabel = viaNames.length ? `via ${viaNames.join(" and ")}` : "";
         return rowHtml({
           line: s.operator || "Train",
           dest: s.destination || "-",

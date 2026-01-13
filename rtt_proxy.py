@@ -220,7 +220,7 @@ class PerKeyLimiter:
             return True, 0
 
 
-_hhy_cache: Dict[str, Tuple[Optional[str], float]] = {}
+_hhy_cache: Dict[str, Tuple[Optional[Tuple[str, ...]], float]] = {}
 _hhy_lock = threading.Lock()
 
 _trains_cache: Optional[CacheEntry] = None
@@ -488,14 +488,15 @@ def prune_hhy_cache(now: float) -> None:
             _hhy_cache.clear()
 
 
-def service_via(uid: str, run_date: str) -> Optional[str]:
+def service_via(uid: str, run_date: str) -> Optional[Tuple[str, ...]]:
     now = time.time()
+    cache_key = f"{uid}:{run_date}"
     with _hhy_lock:
-        cached = _hhy_cache.get(uid)
+        cached = _hhy_cache.get(cache_key)
         if cached and cached[1] > now:
             return cached[0]
 
-    via: Optional[str] = None
+    via: Optional[Tuple[str, ...]] = None
     try:
         parts = run_date.split("-")
         if len(parts) != 3:
@@ -517,11 +518,15 @@ def service_via(uid: str, run_date: str) -> Optional[str]:
             if crs == "FPK" and idx_fpk is None:
                 idx_fpk = i
 
-        if idx_aap is not None and idx_hhy is not None and idx_hhy > idx_aap:
-            via = "HHY"
-        if idx_aap is not None and idx_fpk is not None and idx_fpk > idx_aap:
-            if via is None:
-                via = "FPK"
+        if idx_aap is not None:
+            candidates: List[Tuple[str, int]] = []
+            if idx_hhy is not None and idx_hhy > idx_aap:
+                candidates.append(("HHY", idx_hhy))
+            if idx_fpk is not None and idx_fpk > idx_aap:
+                candidates.append(("FPK", idx_fpk))
+            if candidates:
+                candidates.sort(key=lambda item: item[1])
+                via = tuple(code for code, _ in candidates)
     except (UpstreamError, UpstreamRateLimited, MissingConfig) as exc:
         log.warning("HHY check failed: %s", exc)
         via = None
@@ -530,7 +535,7 @@ def service_via(uid: str, run_date: str) -> Optional[str]:
         via = None
 
     with _hhy_lock:
-        _hhy_cache[uid] = (via, now + HHY_TTL_SEC)
+        _hhy_cache[cache_key] = (via, now + HHY_TTL_SEC)
     return via
 
 
@@ -588,7 +593,7 @@ def fetch_trains() -> CacheEntry:
                 "operator": s.get("atocName"),
                 "trainId": s.get("trainIdentity"),
                 "cancelled": is_cancelled,
-                "via": via,
+                "via": list(via),
             }
         )
 
