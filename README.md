@@ -50,6 +50,9 @@ Redis (optional shared cache + rate limiting):
 Runtime:
 - `APP_HOST` - default `127.0.0.1`
 - `APP_PORT` - default `5010`
+- `APP_ENV` or `FLASK_ENV` - set to `production` for production mode
+- `DEBUG` - when explicitly set to `0/false`, production mode is enabled
+- `WEB_CONCURRENCY` / `GUNICORN_WORKERS` - worker count for compliance checks
 
 ## Run (dev)
 ```bash
@@ -81,6 +84,10 @@ fall back to in-memory per process.
   and caching are shared across workers.
 - Without Redis, run a single worker only (for example: `gunicorn -w 1 ...`)
   to keep TfL outbound limits compliant.
+  In production, the app requires `WEB_CONCURRENCY` or `GUNICORN_WORKERS` to be
+  set and will refuse to start if multi-worker is configured without Redis.
+  Production mode is detected when `APP_ENV` or `FLASK_ENV` is `production`,
+  or when `DEBUG` is explicitly set to `false/0`.
 
 ## Endpoints
 `GET /api/trains`
@@ -92,31 +99,36 @@ fall back to in-memory per process.
 - TfL proxy data.
 - Response: `data`, `fetched_at`, `cache_ttl_sec`.
 
-## Refresh and cache (compliance)
+## Fair-use and best practice
 - The proxy honors `Cache-Control`, `Age`, and `Expires`.
 - The frontend computes the polling interval from TTL with a 60s fallback.
 - `stale-while-revalidate` is used (serve cache and refresh in background).
 - Retry uses exponential backoff with jitter and honors `Retry-After`.
 
-## Limits (TfL + RTT)
-- TfL Open Data: 50 req/min without keys, 500 req/min with keys.
-- Limits are enforced in the backend via `TFL_OUTBOUND_RATE_LIMIT_PER_MIN`.
-- RTT outbound limit is controlled via `RTT_OUTBOUND_RATE_LIMIT_PER_MIN`.
-- There is also a per-client IP limit: `API_RATE_LIMIT_PER_MIN`.
+## Official requirements (TfL + RTT)
+- TfL Open Data requires a visible attribution label: `Powered by TfL Open Data`.
+- TfL Open Data rate limits: 50 req/min without keys, 500 req/min with keys.
+  Limits are enforced in the backend via `TFL_OUTBOUND_RATE_LIMIT_PER_MIN`.
+- TfL API rate limits are published at https://api-portal.tfl.gov.uk/.
+- RTT access is intended for personal, non-commercial use.
+- Usage of these data sources is subject to their terms.
 
 ## Usage scope
 This project is intended for personal, non-commercial use. RTT access is
 intended for personal use only. Commercial use should be reviewed against
-provider terms or confirmed with RTT before deployment.
+provider terms or confirmed with RTT before deployment. This project is not
+affiliated with TfL or RTT.
 
 ## Attribution (TfL)
 The UI shows a visible `Powered by TfL Open Data` label.
 
 ## Terms and conditions
-Usage of TfL data is subject to the TfL Open Data / Transport Data Service
-terms and conditions:
+Usage of these data sources is subject to their official terms and conditions:
 - https://tfl.gov.uk/info-for/open-data-users/our-open-data
 - https://tfl.gov.uk/corporate/terms-and-conditions/transport-data-service
+- https://www.realtimetrains.co.uk/about/developer/
+- https://www.realtimetrains.co.uk/legal/
+- https://api.rtt.io/
 
 ## Security
 - CORS is allowlist-only (ENV).
@@ -131,5 +143,6 @@ pip-audit -r requirements.txt
 
 ## Tests
 ```bash
-pytest
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```

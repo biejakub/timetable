@@ -1,11 +1,42 @@
 import importlib
+import sys
+
+import pytest
+
+
+_ENV_KEYS = [
+    "APP_ENV",
+    "FLASK_ENV",
+    "DEBUG",
+    "WEB_CONCURRENCY",
+    "GUNICORN_WORKERS",
+    "REDIS_URL",
+    "RTT_USER",
+    "RTT_PASS",
+    "TFL_APP_ID",
+    "TFL_APP_KEY",
+    "TFL_OUTBOUND_RATE_LIMIT_PER_MIN",
+    "CORS_ALLOWED_ORIGINS",
+]
 
 
 def load_module(monkeypatch, **env):
+    for key in _ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
+    sys.modules.pop("rtt_proxy", None)
     import rtt_proxy
     return importlib.reload(rtt_proxy)
+
+
+def import_module(monkeypatch, **env):
+    for key in _ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    sys.modules.pop("rtt_proxy", None)
+    return importlib.import_module("rtt_proxy")
 
 
 def test_cors_allow_deny(monkeypatch):
@@ -82,3 +113,34 @@ def test_tfl_validation(monkeypatch):
     assert resp.status_code == 400
     data = resp.get_json()
     assert data["error"]["code"] == "invalid_parameter"
+
+
+def test_production_requires_worker_count(monkeypatch):
+    with pytest.raises(RuntimeError, match="WEB_CONCURRENCY|GUNICORN_WORKERS"):
+        import_module(monkeypatch, APP_ENV="production")
+
+
+def test_production_multiworker_requires_redis(monkeypatch):
+    with pytest.raises(RuntimeError, match="Multi-worker requires Redis"):
+        import_module(monkeypatch, APP_ENV="production", WEB_CONCURRENCY="2")
+
+
+def test_production_single_worker_without_redis_ok(monkeypatch):
+    mod = load_module(monkeypatch, APP_ENV="production", WEB_CONCURRENCY="1")
+    assert mod.is_production_mode() is True
+    assert mod.get_configured_worker_count() == 1
+
+
+def test_tfl_outbound_cap_anonymous(monkeypatch):
+    mod = load_module(monkeypatch, TFL_OUTBOUND_RATE_LIMIT_PER_MIN="1000")
+    assert mod.TFL_OUTBOUND_RATE_LIMIT_PER_MIN == 50
+
+
+def test_tfl_outbound_cap_with_keys(monkeypatch):
+    mod = load_module(
+        monkeypatch,
+        TFL_APP_ID="id",
+        TFL_APP_KEY="key",
+        TFL_OUTBOUND_RATE_LIMIT_PER_MIN="1000",
+    )
+    assert mod.TFL_OUTBOUND_RATE_LIMIT_PER_MIN == 500

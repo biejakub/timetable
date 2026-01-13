@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -18,10 +18,10 @@ body{
   display:flex; justify-content:space-between; align-items:center;
 }
 #topDay{ font-size:52px; font-weight:600; letter-spacing:.5px; }
-#topDate,#lastUpdate{ font-size:22px; color:#9a9a9a; }
+#topDate,#lastUpdate{ font-size:24px; color:#9a9a9a; }
 #topTime{ font-size:72px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
 
-.wrap{ padding:26px 60px 90px; display:grid; gap:24px; }
+.wrap{ padding:26px 60px 30px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
 .title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
 .subtitle{ font-size:26px; opacity:.7; margin:0 0 18px 0; }
@@ -78,7 +78,7 @@ body{
   </div>
   <div class="h-right">
     <div id="topTime">--:--:--</div>
-    <div id="lastUpdate">Ostatnia aktualizacja: --:--:--</div>
+    <div id="lastUpdate">Last update: --:--:--</div>
   </div>
 </div>
 
@@ -87,31 +87,31 @@ body{
   <section class="card">
     <div class="title">
       <span>Alexandra Palace</span>
-      <span id="railStatus" class="pill muted">odświeżanie...</span>
+      <span id="railStatus" class="pill muted">refreshing...</span>
     </div>
-    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington i/lub Finsbury Park</div>
-    <div id="railList" class="list muted">Ładowanie danych...</div>
+    <div class="subtitle">Next trains via Highbury &amp; Islington and/or Finsbury Park</div>
+    <div id="railList" class="list muted">Loading data...</div>
     <div id="railFallback" class="bigmsg muted" style="display:none;">
-      Brak danych RTT (sprawdź proxy).
+      No RTT data (check proxy).
     </div>
   </section>
 
   <section class="card">
     <div class="title">
       <span>Nightingale Road</span>
-      <span id="busStatus" class="pill muted">odświeżanie...</span>
+      <span id="busStatus" class="pill muted">refreshing...</span>
     </div>
-    <div class="subtitle">Najbliższe autobusy (221 + N91) przez Bounds Green</div>
-    <div id="busList" class="list muted">Ładowanie danych...</div>
+    <div class="subtitle">Next buses (221 + N91) via Bounds Green</div>
+    <div id="busList" class="list muted">Loading data...</div>
   </section>
 
   <section class="card">
     <div class="title">
       <span>Bounds Green</span>
-      <span id="tubeStatus" class="pill muted">odświeżanie...</span>
+      <span id="tubeStatus" class="pill muted">refreshing...</span>
     </div>
-    <div class="subtitle">Najbliższe metro przez Finsbury Park (kierunek centrum)</div>
-    <div id="tubeList" class="list muted">Ładowanie danych...</div>
+    <div class="subtitle">Next Underground services via Finsbury Park (towards central)</div>
+    <div id="tubeList" class="list muted">Loading data...</div>
   </section>
 
 </div>
@@ -169,7 +169,7 @@ const jitter = ms => Math.round(ms * (0.7 + Math.random() * 0.6));
 
 function setStatus(id, ok){
   const el = document.getElementById(id);
-  el.textContent = ok ? "na żywo" : "brak danych";
+  el.textContent = ok ? "live" : "no data";
   el.classList.toggle("muted", !ok);
   el.classList.toggle("live", ok);
 }
@@ -268,7 +268,7 @@ function busEta(item){
   const secsRaw = toSecs(item.timeToStation);
   const secs = Math.max(0, secsRaw);
 
-  if (secs < 60) return { text:"Odjazd", depart:true };
+  if (secs < 60) return { text:"Due", depart:true };
 
   const m = mins(secs);
   if (m <= 5)  return { text:`${m} min`, bussoon:true };
@@ -282,7 +282,7 @@ function busEta(item){
 
 function tubeEta(item){
   const secs = Math.max(0, toSecs(item.timeToStation));
-  if (secs < 60) return { text:"Odjazd", depart:true };
+  if (secs < 60) return { text:"Due", depart:true };
 
   const m = mins(secs);
   if (m <= 15) return { text:`${m} min`, soon15:true };
@@ -307,7 +307,7 @@ function railEta(svc){
   if (!dep) return { text:svc.etd || svc.std || "--" };
 
   const diffSec = Math.max(0, Math.floor((dep - new Date())/1000));
-  if (diffSec < 60) return { text:"Odjazd", depart:true };
+  if (diffSec < 60) return { text:"Due", depart:true };
 
   const dm = mins(diffSec);
   if (dm <= 15) return { text:`${dm} min`, soon15:true };
@@ -382,7 +382,7 @@ async function loadRail(){
           etaBusSoon: false,
           etaBusGreen: false,
           etaDepart: eta.depart,
-          subline: `${s.platform ? `Peron ${s.platform}` : "Peron -"}${viaLabel ? ` (${viaLabel})` : ""}`
+          subline: `${s.platform ? `Platform ${s.platform}` : "Platform -"}${viaLabel ? ` (${viaLabel})` : ""}`
         });
       });
 
@@ -413,7 +413,7 @@ async function loadBus(){
       .slice(0, MAX_ITEMS);
 
     if(!combined.length){
-      renderMessage("busList", `Brak danych live dla ${BUS_PRIMARY} i ${BUS_FALLBACK}.`);
+      renderMessage("busList", `No live data for ${BUS_PRIMARY} and ${BUS_FALLBACK}.`);
       setStatus("busStatus", false);
       schedule("bus", loadBus, nextDelayFromTtl(ttlSec));
       return;
@@ -440,7 +440,7 @@ async function loadBus(){
     schedule("bus", loadBus, nextDelayFromTtl(ttlSec));
     setLastUpdate();
   }catch(err){
-    renderMessage("busList", "Błąd danych bus.");
+    renderMessage("busList", "Bus data error.");
     setStatus("busStatus", false);
     schedule("bus", loadBus, backoffDelay("bus", err.retryAfterSec));
   }
@@ -458,7 +458,7 @@ async function loadTube(){
       .slice(0, MAX_ITEMS);
 
     if(!westbound.length){
-      renderMessage("tubeList", "Brak danych Westbound.");
+      renderMessage("tubeList", "No westbound data.");
       setStatus("tubeStatus", false);
       schedule("tube", loadTube, nextDelayFromTtl(ttlSec));
       return;
@@ -485,34 +485,33 @@ async function loadTube(){
     schedule("tube", loadTube, nextDelayFromTtl(ttlSec));
     setLastUpdate();
   }catch(err){
-    renderMessage("tubeList", "Błąd danych tube.");
+    renderMessage("tubeList", "Tube data error.");
     setStatus("tubeStatus", false);
     schedule("tube", loadTube, backoffDelay("tube", err.retryAfterSec));
   }
 }
 
-const PL_DAYS = [
-  "Niedziela",
-  "Poniedziałek",
-  "Wtorek",
-  "Środa",
-  "Czwartek",
-  "Piątek",
-  "Sobota"
+const EN_DAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday"
 ];
 
 function updateClock(){
   const d = new Date();
-  topDay.textContent = PL_DAYS[d.getDay()];
-  topDate.textContent = d.toLocaleDateString('pl-PL',{day:'2-digit',month:'2-digit',year:'numeric'})
-                         .replace(/\./g," / ").replace(/ /g,"");
-  topTime.textContent = d.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  topDay.textContent = EN_DAYS[d.getDay()];
+  topDate.textContent = d.toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'numeric'});
+  topTime.textContent = d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
 function setLastUpdate(){
   lastUpdate.textContent =
-    "Ostatnia aktualizacja: " +
-    new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    "Last update: " +
+    new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
 setInterval(updateClock, 1000);

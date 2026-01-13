@@ -54,6 +54,13 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_optional_bool(name: str) -> Optional[bool]:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def env_csv(name: str, default: str) -> List[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
@@ -116,6 +123,10 @@ MAX_CACHE = env_int("MAX_CACHE", 2000)
 
 ENABLE_HSTS = env_bool("ENABLE_HSTS", False)
 HSTS_MAX_AGE_SEC = env_int("HSTS_MAX_AGE_SEC", 15552000)
+
+APP_ENV = os.getenv("APP_ENV")
+FLASK_ENV = os.getenv("FLASK_ENV")
+DEBUG_FLAG = env_optional_bool("DEBUG")
 
 REDIS_URL = os.getenv("REDIS_URL")
 REDIS_PREFIX = os.getenv("REDIS_PREFIX", "timetable_proxy")
@@ -359,6 +370,60 @@ def get_redis_client() -> Optional[Any]:
         return _redis_client
 
 
+def is_production_mode() -> bool:
+    env_value = (APP_ENV or FLASK_ENV or "").strip().lower()
+    if env_value in {"production", "prod"}:
+        return True
+    if DEBUG_FLAG is not None:
+        return not DEBUG_FLAG
+    return False
+
+
+def get_configured_worker_count() -> Optional[int]:
+    for name in ("WEB_CONCURRENCY", "GUNICORN_WORKERS"):
+        raw = os.getenv(name)
+        if not raw:
+            continue
+        try:
+            count = int(raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name} must be a positive integer when running in production."
+            ) from exc
+        if count < 1:
+            raise RuntimeError(f"{name} must be a positive integer when running in production.")
+        return count
+    return None
+
+
+def is_redis_available() -> bool:
+    client = get_redis_client()
+    if client is None:
+        return False
+    try:
+        client.ping()
+    except Exception as exc:
+        log.warning("Redis ping failed: %s", exc)
+        return False
+    return True
+
+
+def enforce_production_compliance() -> None:
+    if not is_production_mode():
+        return
+    worker_count = get_configured_worker_count()
+    if worker_count is None:
+        raise RuntimeError(
+            "Production requires WEB_CONCURRENCY or GUNICORN_WORKERS. "
+            "Set it to 1 or configure REDIS_URL for multi-worker deployments."
+        )
+    if worker_count > 1 and not is_redis_available():
+        raise RuntimeError(
+            "Multi-worker requires Redis for shared rate limiting/caching to stay within "
+            "TfL global caps. Use REDIS_URL or run a single worker."
+        )
+
+
 def build_limiters() -> Tuple[PerKeyLimiterLike, SlidingWindowLimiterLike, SlidingWindowLimiterLike]:
     fallback_api = PerKeyLimiter(API_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
     fallback_rtt = SlidingWindowLimiter(RTT_OUTBOUND_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
@@ -405,6 +470,7 @@ _tfl_cache: Dict[str, CacheEntry] = {}
 _tfl_lock = threading.Lock()
 _tfl_refreshing: set[str] = set()
 
+enforce_production_compliance()
 api_limiter, rtt_outbound_limiter, tfl_outbound_limiter = build_limiters()
 
 app = Flask(__name__)
