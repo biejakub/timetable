@@ -15,6 +15,8 @@ pip install -r requirements.txt
 ```
 
 ## Configuration (.env)
+Use `.env.example` as a safe template.
+
 Required:
 - `RTT_USER` - RTT username
 - `RTT_PASS` - RTT password
@@ -74,6 +76,12 @@ Add extra rate limiting on the proxy if needed.
 If `REDIS_URL` is not set or Redis is unavailable, caching and rate limiting
 fall back to in-memory per process.
 
+## Production requirements (compliance)
+- Multi-worker WSGI deployments must use Redis (`REDIS_URL`) so rate limiting
+  and caching are shared across workers.
+- Without Redis, run a single worker only (for example: `gunicorn -w 1 ...`)
+  to keep TfL outbound limits compliant.
+
 ## Endpoints
 `GET /api/trains`
 - Departures from AAP with `via` as a list of CRS codes (ordered after AAP).
@@ -96,8 +104,19 @@ fall back to in-memory per process.
 - RTT outbound limit is controlled via `RTT_OUTBOUND_RATE_LIMIT_PER_MIN`.
 - There is also a per-client IP limit: `API_RATE_LIMIT_PER_MIN`.
 
+## Usage scope
+This project is intended for personal, non-commercial use. RTT access is
+intended for personal use only. Commercial use should be reviewed against
+provider terms or confirmed with RTT before deployment.
+
 ## Attribution (TfL)
 The UI shows a visible `Powered by TfL Open Data` label.
+
+## Terms and conditions
+Usage of TfL data is subject to the TfL Open Data / Transport Data Service
+terms and conditions:
+- https://tfl.gov.uk/info-for/open-data-users/our-open-data
+- https://tfl.gov.uk/corporate/terms-and-conditions/transport-data-service
 
 ## Security
 - CORS is allowlist-only (ENV).
