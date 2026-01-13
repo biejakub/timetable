@@ -136,6 +136,23 @@ fall back to in-memory per process.
 - TfL proxy data.
 - Response: `data`, `fetched_at`, `cache_ttl_sec`.
 
+## Colour legend (ETA)
+Colours are based on time-to-departure vs walking time for each mode.
+
+Walk times:
+- Train (Alexandra Palace): 8 min
+- Tube (Bounds Green): 12 min
+- Bus: 4 min
+
+Buffer: 4 min (train/tube), 2 min (bus)
+Thresholds: red < 60 s, blue >= 20 min
+
+Legend:
+- Red: ETA < 60 s (due now)
+- Yellow: ETA < walk_time + buffer and >= 60 s (hurry - tight window)
+- Green: ETA in [walk_time + buffer, 20 min) (comfortably on time)
+- Blue: ETA >= 20 min (informational / later)
+
 ## Fair-use and best practice
 - The proxy honors `Cache-Control`, `Age`, and `Expires`.
 - The frontend computes the polling interval from TTL with a 60s fallback.

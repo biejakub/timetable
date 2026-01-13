@@ -38,13 +38,10 @@ body{
 
 .eta{ font-weight:700; white-space:nowrap; }
 
-.eta.soon15{ color:#45a9ff; }
-
-.eta.busgreen{ color:#4cff4c; }
-
-.eta.bussoon{ color:#ffd54d; }
-
-.eta.depart{ color:#ff4b4b; }
+.eta.red{ color:#ff4b4b; }
+.eta.yellow{ color:#ffd54d; }
+.eta.green{ color:#4cff4c; }
+.eta.blue{ color:#45a9ff; }
 
 .subline{ font-size:26px; color:#9a9a9a; line-height:1.25; padding-bottom:4px; }
 
@@ -126,6 +123,11 @@ const REFRESH_FALLBACK_MS = 60_000;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_ITEMS = 5;
 
+const ETA_WALK_MIN = { train: 8, tube: 12, bus: 4 };
+const ETA_BUFFER_MIN = { train: 4, tube: 4, bus: 2 };
+const ETA_RED_SEC = 60;
+const ETA_BLUE_MIN = 20;
+
 const BUS_STOP_ID  = "490010277W";
 const BUS_PRIMARY  = "221";
 const BUS_FALLBACK = "N91";
@@ -163,6 +165,11 @@ const byTime = (a,b) => (a.timeToStation ?? 1e12) - (b.timeToStation ?? 1e12);
 const toSecs = x => {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
+};
+
+const toEtaSeconds = x => {
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
 };
 
 const jitter = ms => Math.round(ms * (0.7 + Math.random() * 0.6));
@@ -239,6 +246,36 @@ function parseCacheTtlSeconds(headers){
   return 0;
 }
 
+function toDate(value){
+  if (!value) return null;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? new Date(ts) : null;
+}
+
+function formatClockTime(dt){
+  if (!dt) return "--";
+  return dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
+
+function formatEtaText(etaSec, clockTime){
+  if (etaSec === null) return { text: clockTime || "--" };
+  if (etaSec < ETA_RED_SEC) return { text: "Due" };
+  if (etaSec <= ETA_BLUE_MIN * 60) return { text: `${mins(etaSec)} min` };
+  return { text: clockTime || "--" };
+}
+
+function getEtaClass(etaSec, transportType){
+  if (etaSec === null) return "blue";
+  if (etaSec < ETA_RED_SEC) return "red";
+  if (etaSec >= ETA_BLUE_MIN * 60) return "blue";
+  const walkMin = ETA_WALK_MIN[transportType] ?? 0;
+  const walkSec = walkMin * 60;
+  const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
+  const bufferSec = bufferMin * 60;
+  if (etaSec >= walkSec + bufferSec) return "green";
+  return "yellow";
+}
+
 async function fetchJsonWithMeta(url){
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
@@ -264,35 +301,6 @@ async function fetchJsonWithMeta(url){
   }
 }
 
-function busEta(item){
-  const secsRaw = toSecs(item.timeToStation);
-  const secs = Math.max(0, secsRaw);
-
-  if (secs < 60) return { text:"Due", depart:true };
-
-  const m = mins(secs);
-  if (m <= 5)  return { text:`${m} min`, bussoon:true };
-  if (m <= 15) return { text:`${m} min`, busgreen:true };
-
-  return {
-    text: new Date(item.expectedArrival)
-      .toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
-  };
-}
-
-function tubeEta(item){
-  const secs = Math.max(0, toSecs(item.timeToStation));
-  if (secs < 60) return { text:"Due", depart:true };
-
-  const m = mins(secs);
-  if (m <= 15) return { text:`${m} min`, soon15:true };
-
-  return {
-    text: new Date(item.expectedArrival)
-      .toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
-  };
-}
-
 function hhmmToDate(runDate, hhmm){
   if(!runDate || !hhmm) return null;
   const d = new Date(runDate+"T00:00:00");
@@ -302,29 +310,8 @@ function hhmmToDate(runDate, hhmm){
   return d;
 }
 
-function railEta(svc){
-  const dep = hhmmToDate(svc.runDate, svc.etd || svc.std);
-  if (!dep) return { text:svc.etd || svc.std || "--" };
-
-  const diffSec = Math.max(0, Math.floor((dep - new Date())/1000));
-  if (diffSec < 60) return { text:"Due", depart:true };
-
-  const dm = mins(diffSec);
-  if (dm <= 15) return { text:`${dm} min`, soon15:true };
-
-  return {
-    text: dep.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
-  };
-}
-
-function rowHtml({ line, dest, etaText, etaSoon15, etaBusSoon, etaBusGreen, etaDepart, subline }){
-  const cls = [
-    "eta",
-    etaSoon15 ? "soon15" : "",
-    etaBusSoon ? "bussoon" : "",
-    etaBusGreen ? "busgreen" : "",
-    etaDepart ? "depart" : ""
-  ].join(" ").trim();
+function rowHtml({ line, dest, etaText, etaClass, subline }){
+  const cls = ["eta", etaClass].filter(Boolean).join(" ");
 
   return `
     <div class="row">
@@ -367,7 +354,10 @@ async function loadRail(){
       })
       .slice(0, MAX_ITEMS)
       .map(s=>{
-        const eta = railEta(s);
+        const dep = hhmmToDate(s.runDate, s.etd || s.std);
+        const etaSec = dep ? Math.max(0, Math.floor((dep - new Date()) / 1000)) : null;
+        const clockTime = dep ? formatClockTime(dep) : (s.etd || s.std || "--");
+        const eta = formatEtaText(etaSec, clockTime);
         const viaCodes = Array.isArray(s.via) ? s.via : (s.via ? [s.via] : []);
         const viaNames = viaCodes.map(code => (
           code === "HHY" ? "Highbury & Islington"
@@ -378,10 +368,7 @@ async function loadRail(){
           line: s.operator || "Train",
           dest: s.destination || "-",
           etaText: eta.text,
-          etaSoon15: eta.soon15,
-          etaBusSoon: false,
-          etaBusGreen: false,
-          etaDepart: eta.depart,
+          etaClass: getEtaClass(etaSec, "train"),
           subline: `${s.platform ? `Platform ${s.platform}` : "Platform -"}${viaLabel ? ` (${viaLabel})` : ""}`
         });
       });
@@ -408,7 +395,8 @@ async function loadBus(){
         const ln = String(x.lineName).toUpperCase();
         return ln === BUS_PRIMARY || ln === BUS_FALLBACK;
       })
-      .filter(x => (x.timeToStation ?? 0) >= 0)
+      .filter(x => Number.isFinite(Number(x.timeToStation)))
+      .filter(x => Number(x.timeToStation) >= 0)
       .sort(byTime)
       .slice(0, MAX_ITEMS);
 
@@ -422,15 +410,13 @@ async function loadBus(){
     setStatus("busStatus", true);
 
     const rows = combined.map(x=>{
-      const eta = busEta(x);
+      const etaSec = toEtaSeconds(x.timeToStation);
+      const eta = formatEtaText(etaSec, formatClockTime(toDate(x.expectedArrival)));
       return rowHtml({
         line: x.lineName,
         dest: x.destinationName || "",
         etaText: eta.text,
-        etaSoon15: eta.soon15,
-        etaBusSoon: eta.bussoon,
-        etaBusGreen: eta.busgreen,
-        etaDepart: eta.depart,
+        etaClass: getEtaClass(etaSec, "bus"),
         subline: null
       });
     });
@@ -453,7 +439,8 @@ async function loadTube(){
 
     const westbound = arr
       .filter(x => /westbound/i.test(x.platformName || ""))
-      .filter(x => (x.timeToStation ?? 0) >= 0)
+      .filter(x => Number.isFinite(Number(x.timeToStation)))
+      .filter(x => Number(x.timeToStation) >= 0)
       .sort(byTime)
       .slice(0, MAX_ITEMS);
 
@@ -467,15 +454,13 @@ async function loadTube(){
     setStatus("tubeStatus", true);
 
     const rows = westbound.map(x=>{
-      const eta = tubeEta(x);
+      const etaSec = toEtaSeconds(x.timeToStation);
+      const eta = formatEtaText(etaSec, formatClockTime(toDate(x.expectedArrival)));
       return rowHtml({
         line: "Piccadilly",
         dest: (x.destinationName || "").replace(/ Underground Station/i, ""),
         etaText: eta.text,
-        etaSoon15: eta.soon15,
-        etaBusSoon: false,
-        etaBusGreen: false,
-        etaDepart: eta.depart,
+        etaClass: getEtaClass(etaSec, "tube"),
         subline: "Westbound"
       });
     });
