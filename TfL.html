@@ -6,17 +6,11 @@
 <title>TfL Panel</title>
 
 <style>
-/* =========================================
-   BASE UI / THEME
-   ========================================= */
 body{
   margin:0; background:#000; color:#fff; font-family:sans-serif;
   min-height:100vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
 }
 
-/* =========================================
-   HEADER
-   ========================================= */
 .header{
   position:sticky; top:0; z-index:10;
   padding:18px 60px; background:#000;
@@ -27,9 +21,6 @@ body{
 #topDate,#lastUpdate{ font-size:22px; color:#9a9a9a; }
 #topTime{ font-size:72px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
 
-/* =========================================
-   CARDS + LISTS
-   ========================================= */
 .wrap{ padding:26px 60px 60px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
 .title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
@@ -47,23 +38,16 @@ body{
 
 .eta{ font-weight:700; white-space:nowrap; }
 
-/* <=15 min → BLUE (trains/tube) */
 .eta.soon15{ color:#45a9ff; }
 
-/* 6–15 min (bus only) → GREEN */
 .eta.busgreen{ color:#4cff4c; }
 
-/* <=5 min → YELLOW (bus) */
 .eta.bussoon{ color:#ffd54d; }
 
-/* <60s → RED */
 .eta.depart{ color:#ff4b4b; }
 
 .subline{ font-size:26px; color:#9a9a9a; }
 
-/* =========================================
-   LIVE STATUS PILL
-   ========================================= */
 .pill{
   font-size:26px; padding:3px 14px;
   border:1px solid #333; border-radius:999px;
@@ -75,6 +59,12 @@ body{
   50%{ opacity:1; transform:scale(1.04); }
 }
 
+.attribution{
+  font-size:18px;
+  color:#7d7d7d;
+  padding:0 60px 28px;
+}
+
 .muted{ opacity:.65; }
 .bigmsg{ font-size:34px; opacity:.8; padding:8px 0; }
 </style>
@@ -83,8 +73,8 @@ body{
 <body>
 <div class="header">
   <div class="h-left">
-    <div id="topDay">—</div>
-    <div id="topDate">—</div>
+    <div id="topDay">--</div>
+    <div id="topDate">--</div>
   </div>
   <div class="h-right">
     <div id="topTime">--:--:--</div>
@@ -94,48 +84,45 @@ body{
 
 <div class="wrap">
 
-  <!-- TRAINS -->
   <section class="card">
     <div class="title">
       <span>Alexandra Palace</span>
-      <span id="railStatus" class="pill muted">odświeżanie…</span>
+      <span id="railStatus" class="pill muted">odświeżanie...</span>
     </div>
     <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington</div>
-    <div id="railList" class="list muted">Ładowanie danych…</div>
+    <div id="railList" class="list muted">Ładowanie danych...</div>
     <div id="railFallback" class="bigmsg muted" style="display:none;">
       Brak danych RTT (sprawdź proxy).
     </div>
   </section>
 
-  <!-- BUS -->
   <section class="card">
     <div class="title">
       <span>Nightingale Road</span>
-      <span id="busStatus" class="pill muted">odświeżanie…</span>
+      <span id="busStatus" class="pill muted">odświeżanie...</span>
     </div>
     <div class="subtitle">Najbliższe autobusy (221 + N91) przez Bounds Green</div>
-    <div id="busList" class="list muted">Ładowanie danych…</div>
+    <div id="busList" class="list muted">Ładowanie danych...</div>
   </section>
 
-  <!-- TUBE -->
   <section class="card">
     <div class="title">
       <span>Bounds Green</span>
-      <span id="tubeStatus" class="pill muted">odświeżanie…</span>
+      <span id="tubeStatus" class="pill muted">odświeżanie...</span>
     </div>
     <div class="subtitle">Najbliższe metro przez Finsbury Park (kierunek centrum)</div>
-    <div id="tubeList" class="list muted">Ładowanie danych…</div>
+    <div id="tubeList" class="list muted">Ładowanie danych...</div>
   </section>
 
 </div>
 
+<div class="attribution">Powered by TfL Open Data</div>
+
 <script>
-/* ==========================
-   CONFIG
-   ========================== */
-const REFRESH_MS = 30_000;
+const API_BASE = "http://127.0.0.1:5010";
+const REFRESH_FALLBACK_MS = 60_000;
 const FETCH_TIMEOUT_MS = 8000;
-const MAX_ITEMS = 5;  // było 3
+const MAX_ITEMS = 5;
 
 const BUS_STOP_ID  = "490010277W";
 const BUS_PRIMARY  = "221";
@@ -144,14 +131,13 @@ const BUS_FALLBACK = "N91";
 const TUBE_LINE_ID = "piccadilly";
 const TUBE_STOP_ID = "940GZZLUBDS";
 
-const RTT_URL = "http://127.0.0.1:5010/api/trains";
+const RTT_URL = `${API_BASE}/api/trains`;
+const BUS_URL = `${API_BASE}/api/tfl/stop/${BUS_STOP_ID}/arrivals`;
+const TUBE_URL = `${API_BASE}/api/tfl/line/${TUBE_LINE_ID}/arrivals/${TUBE_STOP_ID}`;
 
-const RTT_RETRIES = 1;
-const RTT_RETRY_DELAY_MS = 1500;
+const BACKOFF_BASE_MS = 2000;
+const BACKOFF_MAX_MS = 120_000;
 
-/* ==========================
-   DOM
-   ========================== */
 const topDay = document.getElementById("topDay");
 const topDate = document.getElementById("topDate");
 const topTime = document.getElementById("topTime");
@@ -162,21 +148,22 @@ const railFallback = document.getElementById("railFallback");
 const busList = document.getElementById("busList");
 const tubeList = document.getElementById("tubeList");
 
-/* ==========================
-   HELPERS
-   ========================== */
+const timers = { rail: null, bus: null, tube: null };
+const backoff = { rail: 0, bus: 0, tube: 0 };
+
 const esc = v => String(v ?? "").replace(/[&<>"']/g, m => ({
   "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
 }[m]));
 
 const mins = s => Math.max(0, Math.floor((s || 0) / 60));
 const byTime = (a,b) => (a.timeToStation ?? 1e12) - (b.timeToStation ?? 1e12);
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const toSecs = x => {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
 };
+
+const jitter = ms => Math.round(ms * (0.7 + Math.random() * 0.6));
 
 function setStatus(id, ok){
   const el = document.getElementById(id);
@@ -197,33 +184,84 @@ function renderMessage(id, msg){
   el.textContent = msg;
 }
 
-async function fetchJson(url){
+function schedule(name, fn, delayMs){
+  clearTimeout(timers[name]);
+  timers[name] = setTimeout(fn, delayMs);
+}
+
+function nextDelayFromTtl(ttlSec){
+  // Respect upstream TTLs to avoid over-polling.
+  const ttlMs = Math.max(0, toSecs(ttlSec)) * 1000;
+  return Math.max(REFRESH_FALLBACK_MS, ttlMs);
+}
+
+function backoffDelay(name, retryAfterSec){
+  backoff[name] = Math.min(backoff[name] + 1, 6);
+  let delay = BACKOFF_BASE_MS * (2 ** (backoff[name] - 1));
+  delay = Math.min(delay, BACKOFF_MAX_MS);
+  if (retryAfterSec) delay = Math.max(delay, retryAfterSec * 1000);
+  return Math.max(REFRESH_FALLBACK_MS, jitter(delay));
+}
+
+function resetBackoff(name){
+  backoff[name] = 0;
+}
+
+function parseRetryAfter(header){
+  if (!header) return 0;
+  const v = header.trim();
+  if (/^\d+$/.test(v)) return Number(v);
+  const t = Date.parse(v);
+  if (Number.isFinite(t)){
+    return Math.max(0, Math.round((t - Date.now()) / 1000));
+  }
+  return 0;
+}
+
+function parseCacheTtlSeconds(headers){
+  const cc = headers.get("Cache-Control") || "";
+  const maxAgeMatch = cc.match(/max-age=(\d+)/i);
+  if (maxAgeMatch){
+    const maxAge = Number(maxAgeMatch[1]);
+    const age = Number(headers.get("Age") || 0);
+    const ttl = Math.max(0, maxAge - (Number.isFinite(age) ? age : 0));
+    return Number.isFinite(ttl) ? ttl : 0;
+  }
+  const expires = headers.get("Expires");
+  if (expires){
+    const ts = Date.parse(expires);
+    if (Number.isFinite(ts)){
+      return Math.max(0, Math.round((ts - Date.now()) / 1000));
+    }
+  }
+  return 0;
+}
+
+async function fetchJsonWithMeta(url){
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
   try{
     const r = await fetch(url, { signal:c.signal });
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
+    const retryAfterSec = parseRetryAfter(r.headers.get("Retry-After"));
+    const headerTtl = parseCacheTtlSeconds(r.headers);
+    if(!r.ok){
+      const err = new Error(`HTTP ${r.status}`);
+      err.retryAfterSec = retryAfterSec;
+      err.status = r.status;
+      throw err;
+    }
+    const payload = await r.json();
+    const payloadTtl = toSecs(payload?.cache_ttl_sec);
+    return {
+      payload,
+      ttlSec: Math.max(headerTtl, payloadTtl),
+      retryAfterSec
+    };
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchJsonRetry(url, retries, delayMs){
-  try{
-    return await fetchJson(url);
-  }catch(e){
-    if(retries <= 0) throw e;
-    await sleep(delayMs);
-    return await fetchJson(url);
-  }
-}
-
-/* ==========================
-   ETA LOGIC
-   ========================== */
-
-// BUS
 function busEta(item){
   const secsRaw = toSecs(item.timeToStation);
   const secs = Math.max(0, secsRaw);
@@ -240,7 +278,6 @@ function busEta(item){
   };
 }
 
-// TUBE
 function tubeEta(item){
   const secs = Math.max(0, toSecs(item.timeToStation));
   if (secs < 60) return { text:"Odjazd", depart:true };
@@ -254,7 +291,6 @@ function tubeEta(item){
   };
 }
 
-// RAIL
 function hhmmToDate(runDate, hhmm){
   if(!runDate || !hhmm) return null;
   const d = new Date(runDate+"T00:00:00");
@@ -279,9 +315,6 @@ function railEta(svc){
   };
 }
 
-/* ==========================
-   ROW TEMPLATE
-   ========================== */
 function rowHtml({ line, dest, etaText, etaSoon15, etaBusSoon, etaBusGreen, etaDepart, subline }){
   const cls = [
     "eta",
@@ -306,22 +339,17 @@ function rowHtml({ line, dest, etaText, etaSoon15, etaBusSoon, etaBusGreen, etaD
   `;
 }
 
-/* ==========================
-   LOADERS
-   ========================== */
-
-// TRAINS
 async function loadRail(){
   try{
-    const data = await fetchJsonRetry(RTT_URL, RTT_RETRIES, RTT_RETRY_DELAY_MS);
-    const servicesRaw = Array.isArray(data?.services) ? data.services : [];
-
+    const { payload, ttlSec } = await fetchJsonWithMeta(RTT_URL);
+    const servicesRaw = Array.isArray(payload?.services) ? payload.services : [];
     const services = servicesRaw.filter(s => !s.cancelled);
 
     if(!services.length){
       railList.style.display="none";
       railFallback.style.display="block";
       setStatus("railStatus", false);
+      schedule("rail", loadRail, nextDelayFromTtl(ttlSec));
       return;
     }
 
@@ -340,29 +368,32 @@ async function loadRail(){
         const eta = railEta(s);
         return rowHtml({
           line: s.operator || "Train",
-          dest: s.destination || "—",
+          dest: s.destination || "-",
           etaText: eta.text,
           etaSoon15: eta.soon15,
           etaBusSoon: false,
           etaBusGreen: false,
           etaDepart: eta.depart,
-          subline: s.platform ? `Peron ${s.platform}` : "Peron —"
+          subline: s.platform ? `Peron ${s.platform}` : "Peron -"
         });
       });
 
     renderRows("railList", rows);
-  }catch{
+    resetBackoff("rail");
+    schedule("rail", loadRail, nextDelayFromTtl(ttlSec));
+    setLastUpdate();
+  }catch(err){
     railList.style.display="none";
     railFallback.style.display="block";
     setStatus("railStatus", false);
+    schedule("rail", loadRail, backoffDelay("rail", err.retryAfterSec));
   }
 }
 
-// BUS
 async function loadBus(){
   try{
-    const data = await fetchJson(`https://api.tfl.gov.uk/StopPoint/${BUS_STOP_ID}/Arrivals`);
-    const arr = Array.isArray(data) ? data : [];
+    const { payload, ttlSec } = await fetchJsonWithMeta(BUS_URL);
+    const arr = Array.isArray(payload?.data) ? payload.data : [];
 
     const combined = arr
       .filter(x => {
@@ -376,6 +407,7 @@ async function loadBus(){
     if(!combined.length){
       renderMessage("busList", `Brak danych live dla ${BUS_PRIMARY} i ${BUS_FALLBACK}.`);
       setStatus("busStatus", false);
+      schedule("bus", loadBus, nextDelayFromTtl(ttlSec));
       return;
     }
 
@@ -396,17 +428,20 @@ async function loadBus(){
     });
 
     renderRows("busList", rows);
-  }catch{
+    resetBackoff("bus");
+    schedule("bus", loadBus, nextDelayFromTtl(ttlSec));
+    setLastUpdate();
+  }catch(err){
     renderMessage("busList", "Błąd danych bus.");
     setStatus("busStatus", false);
+    schedule("bus", loadBus, backoffDelay("bus", err.retryAfterSec));
   }
 }
 
-// TUBE
 async function loadTube(){
   try{
-    const data = await fetchJson(`https://api.tfl.gov.uk/Line/${TUBE_LINE_ID}/Arrivals/${TUBE_STOP_ID}`);
-    const arr = Array.isArray(data) ? data : [];
+    const { payload, ttlSec } = await fetchJsonWithMeta(TUBE_URL);
+    const arr = Array.isArray(payload?.data) ? payload.data : [];
 
     const westbound = arr
       .filter(x => /westbound/i.test(x.platformName || ""))
@@ -417,6 +452,7 @@ async function loadTube(){
     if(!westbound.length){
       renderMessage("tubeList", "Brak danych Westbound.");
       setStatus("tubeStatus", false);
+      schedule("tube", loadTube, nextDelayFromTtl(ttlSec));
       return;
     }
 
@@ -437,23 +473,29 @@ async function loadTube(){
     });
 
     renderRows("tubeList", rows);
-  }catch{
+    resetBackoff("tube");
+    schedule("tube", loadTube, nextDelayFromTtl(ttlSec));
+    setLastUpdate();
+  }catch(err){
     renderMessage("tubeList", "Błąd danych tube.");
     setStatus("tubeStatus", false);
+    schedule("tube", loadTube, backoffDelay("tube", err.retryAfterSec));
   }
 }
 
-/* ==========================
-   CLOCK + LOOP
-   ========================== */
-const PL_DAYS = ["Niedziela","Poniedziałek","Środa","Czwartek","Piątek","Sobota","Niedziela"];
-// mała poprawka: faktycznie powinno być od Niedzieli do Soboty, ale jeśli masz już poprawne, zostaw
-// jeśli chcesz dokładnie:
-const _PL_DAYS = ["Niedziela","Poniedziałek","Wtorek","Środa","Czwartek","Piątek","Sobota"];
+const PL_DAYS = [
+  "Niedziela",
+  "Poniedziałek",
+  "Wtorek",
+  "Środa",
+  "Czwartek",
+  "Piątek",
+  "Sobota"
+];
 
 function updateClock(){
   const d = new Date();
-  topDay.textContent = _PL_DAYS[d.getDay()];
+  topDay.textContent = PL_DAYS[d.getDay()];
   topDate.textContent = d.toLocaleDateString('pl-PL',{day:'2-digit',month:'2-digit',year:'numeric'})
                          .replace(/\./g," / ").replace(/ /g,"");
   topTime.textContent = d.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -465,16 +507,12 @@ function setLastUpdate(){
     new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-async function refreshAll(){
-  await Promise.allSettled([loadRail(), loadBus(), loadTube()]);
-  setLastUpdate();
-}
-
 setInterval(updateClock, 1000);
 updateClock();
 
-refreshAll();
-setInterval(refreshAll, REFRESH_MS);
+loadRail();
+loadBus();
+loadTube();
 </script>
 </body>
 </html>
