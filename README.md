@@ -2,6 +2,11 @@
 Proxy server for the TfL dashboard. It fetches departures from RTT and data
 from TfL, applies caching and rate limiting, and exposes JSON for the frontend.
 
+## TL;DR
+- Local, privacy-friendly dashboard for departures near Alexandra Palace.
+- Flask proxy enforces caching, rate limits, and compliance controls.
+- Frontend is a single HTML file designed for always-on display.
+
 ## Project overview
 This project is a lightweight local dashboard and proxy that aggregates
 real-time departures from RTT and TfL, then renders a simple at-a-glance display
@@ -9,14 +14,20 @@ for a specific routine. The backend enforces caching, rate limits, and security
 controls, while the frontend polls the proxy and presents arrivals in a clean,
 large-format UI suitable for a wall-mounted tablet or kiosk.
 
+## Architecture at a glance
+- Frontend (`TfL.html`): static HTML/JS dashboard that polls the proxy.
+- Backend (`rtt_proxy.py`): Flask service that calls RTT and TfL, applies caching,
+  rate limiting, retry/backoff, and enforces compliance checks.
+- Optional Redis: shared cache and shared rate limiter for multi-worker setups.
+
 ## Motivation
-Every morning, my wife and I followed the same small ritual: checking how much time we had left to catch the metro, train, or bus. We relied on our favorite app, Citymapper — it works great. But one day a simple thought crossed my mind: what if this could be even simpler?
+Every morning, my wife and I followed the same small ritual: checking how much time we had left to catch the metro, train, or bus. We relied on our favorite app, Citymapper - it works great. But one day a simple thought crossed my mind: what if this could be even simpler?
 
-That question sparked the idea for this project. If an app can show real-time departures from nearby stops, why couldn’t I build a lightweight, purpose-built display tailored exactly to our routine — especially with a bit of help from AI? What started as a curiosity quickly turned into a working solution.
+That question sparked the idea for this project. If an app can show real-time departures from nearby stops, why couldn't I build a lightweight, purpose-built display tailored exactly to our routine - especially with a bit of help from AI? What started as a curiosity quickly turned into a working solution.
 
-Today, the project is stable, compliant, and does exactly what it was meant to do, so I’m sharing it publicly for others to adapt to their own needs. In our home, it runs as a local web page on an old tablet, permanently mounted near the door and powered directly (battery removed), always ready at a glance.
+Today, the project is stable, compliant, and does exactly what it was meant to do, so I'm sharing it publicly for others to adapt to their own needs. In our home, it runs as a local web page on an old tablet, permanently mounted near the door and powered directly (battery removed), always ready at a glance.
 
-It’s a small project, born from everyday life — and sometimes that’s where the best ideas come from.
+It's a small project, born from everyday life - and sometimes that's where the best ideas come from.
 
 ## Requirements
 - Python 3.9+
@@ -28,6 +39,17 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+## Quick start (local display)
+```bash
+python rtt_proxy.py
+```
+In another terminal:
+```bash
+python -m http.server 8000
+```
+Open `http://localhost:8000/TfL.html` in your browser. If you prefer `file://`,
+set `CORS_ALLOW_NULL_ORIGIN=1`.
 
 ## Configuration (.env)
 Use `.env.example` as a safe template.
@@ -119,6 +141,13 @@ fall back to in-memory per process.
 - The frontend computes the polling interval from TTL with a 60s fallback.
 - `stale-while-revalidate` is used (serve cache and refresh in background).
 - Retry uses exponential backoff with jitter and honors `Retry-After`.
+
+## Common issues
+- App refuses to start in production: set `WEB_CONCURRENCY=1` or configure
+  `REDIS_URL` for multi-worker deployments.
+- CORS errors: add your origin to `CORS_ALLOWED_ORIGINS` or set
+  `CORS_ALLOW_NULL_ORIGIN=1` if using `file://`.
+- No RTT data: verify `RTT_USER` and `RTT_PASS` are set and valid.
 
 ## Official requirements (TfL + RTT)
 - TfL Open Data requires a visible attribution label: `Powered by TfL Open Data`.
