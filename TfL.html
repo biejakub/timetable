@@ -83,7 +83,7 @@ body{
       <span>Alexandra Palace</span>
       <span id="railStatus" class="pill muted">odświeżanie...</span>
     </div>
-    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington lub Finsbury Park</div>
+    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington oraz Finsbury Park</div>
     <div id="railList" class="list muted">Ładowanie danych...</div>
     <div id="railFallback" class="bigmsg muted" style="display:none;">
       Brak danych RTT (sprawdź proxy).
@@ -369,7 +369,7 @@ async function loadRail(){
           etaBusSoon: false,
           etaBusGreen: false,
           etaDepart: eta.depart,
-          subline: `${s.platform ? `Peron ${s.platform}` : "Peron -"}${viaLabel ? ` • ${viaLabel}` : ""}`
+          subline: `${s.platform ? `Peron ${s.platform}` : "Peron -"}${viaLabel ? ` (${viaLabel})` : ""}`
         });
       });
 
