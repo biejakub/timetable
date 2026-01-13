@@ -1,7 +1,22 @@
 # Timetable proxy (RTT + TfL)
-
 Proxy server for the TfL dashboard. It fetches departures from RTT and data
 from TfL, applies caching and rate limiting, and exposes JSON for the frontend.
+
+## Project overview
+This project is a lightweight local dashboard and proxy that aggregates
+real-time departures from RTT and TfL, then renders a simple at-a-glance display
+for a specific routine. The backend enforces caching, rate limits, and security
+controls, while the frontend polls the proxy and presents arrivals in a clean,
+large-format UI suitable for a wall-mounted tablet or kiosk.
+
+## Motivation
+Every morning, my wife and I followed the same small ritual: checking how much time we had left to catch the metro, train, or bus. We relied on our favorite app, Citymapper — it works great. But one day a simple thought crossed my mind: what if this could be even simpler?
+
+That question sparked the idea for this project. If an app can show real-time departures from nearby stops, why couldn’t I build a lightweight, purpose-built display tailored exactly to our routine — especially with a bit of help from AI? What started as a curiosity quickly turned into a working solution.
+
+Today, the project is stable, compliant, and does exactly what it was meant to do, so I’m sharing it publicly for others to adapt to their own needs. In our home, it runs as a local web page on an old tablet, permanently mounted near the door and powered directly (battery removed), always ready at a glance.
+
+It’s a small project, born from everyday life — and sometimes that’s where the best ideas come from.
 
 ## Requirements
 - Python 3.9+
