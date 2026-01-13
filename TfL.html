@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TfL Panel</title>
+
+<style>
+/* =========================================
+   BASE UI / THEME
+   ========================================= */
+body{
+  margin:0; background:#000; color:#fff; font-family:sans-serif;
+  min-height:100vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+}
+
+/* =========================================
+   HEADER
+   ========================================= */
+.header{
+  position:sticky; top:0; z-index:10;
+  padding:18px 60px; background:#000;
+  border-bottom:2px solid #111;
+  display:flex; justify-content:space-between; align-items:center;
+}
+#topDay{ font-size:52px; font-weight:600; letter-spacing:.5px; }
+#topDate,#lastUpdate{ font-size:22px; color:#9a9a9a; }
+#topTime{ font-size:72px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
+
+/* =========================================
+   CARDS + LISTS
+   ========================================= */
+.wrap{ padding:26px 60px 60px; display:grid; gap:24px; }
+.card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
+.title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+.subtitle{ font-size:26px; opacity:.7; margin:0 0 18px 0; }
+
+.list{ display:flex; flex-direction:column; gap:10px; }
+.row{ padding:8px 0; border-bottom:1px solid #111; }
+.row:last-child{ border-bottom:none; }
+
+.topline{ display:flex; justify-content:space-between; align-items:baseline; font-size:44px; line-height:1.1; }
+.left{ display:flex; gap:14px; min-width:0; }
+.line{ white-space:nowrap; font-weight:600; }
+.pipe{ opacity:.6; }
+.dest{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:400; }
+
+.eta{ font-weight:700; white-space:nowrap; }
+
+/* <=15 min → BLUE (trains/tube) */
+.eta.soon15{ color:#45a9ff; }
+
+/* 6–15 min (bus only) → GREEN */
+.eta.busgreen{ color:#4cff4c; }
+
+/* <=5 min → YELLOW (bus) */
+.eta.bussoon{ color:#ffd54d; }
+
+/* <60s → RED */
+.eta.depart{ color:#ff4b4b; }
+
+.subline{ font-size:26px; color:#9a9a9a; }
+
+/* =========================================
+   LIVE STATUS PILL
+   ========================================= */
+.pill{
+  font-size:26px; padding:3px 14px;
+  border:1px solid #333; border-radius:999px;
+  display:inline-block;
+}
+.pill.live{ animation:livePulse 3.8s ease-in-out infinite; }
+@keyframes livePulse{
+  0%,100%{ opacity:.75; transform:scale(1); }
+  50%{ opacity:1; transform:scale(1.04); }
+}
+
+.muted{ opacity:.65; }
+.bigmsg{ font-size:34px; opacity:.8; padding:8px 0; }
+</style>
+</head>
+
+<body>
+<div class="header">
+  <div class="h-left">
+    <div id="topDay">—</div>
+    <div id="topDate">—</div>
+  </div>
+  <div class="h-right">
+    <div id="topTime">--:--:--</div>
+    <div id="lastUpdate">Ostatnia aktualizacja: --:--:--</div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- TRAINS -->
+  <section class="card">
+    <div class="title">
+      <span>Alexandra Palace</span>
+      <span id="railStatus" class="pill muted">odświeżanie…</span>
+    </div>
+    <div class="subtitle">Najbliższe pociągi przez Highbury &amp; Islington</div>
+    <div id="railList" class="list muted">Ładowanie danych…</div>
+    <div id="railFallback" class="bigmsg muted" style="display:none;">
+      Brak danych RTT (sprawdź proxy).
+    </div>
+  </section>
+
+  <!-- BUS -->
+  <section class="card">
+    <div class="title">
+      <span>Nightingale Road</span>
+      <span id="busStatus" class="pill muted">odświeżanie…</span>
+    </div>
+    <div class="subtitle">Najbliższe autobusy (221 + N91) przez Bounds Green</div>
+    <div id="busList" class="list muted">Ładowanie danych…</div>
+  </section>
+
+  <!-- TUBE -->
+  <section class="card">
+    <div class="title">
+      <span>Bounds Green</span>
+      <span id="tubeStatus" class="pill muted">odświeżanie…</span>
+    </div>
+    <div class="subtitle">Najbliższe metro przez Finsbury Park (kierunek centrum)</div>
+    <div id="tubeList" class="list muted">Ładowanie danych…</div>
+  </section>
+
+</div>
+
+<script>
+/* ==========================
+   CONFIG
+   ========================== */
+const REFRESH_MS = 30_000;
+const FETCH_TIMEOUT_MS = 8000;
+const MAX_ITEMS = 5;  // było 3
+
+const BUS_STOP_ID  = "490010277W";
+const BUS_PRIMARY  = "221";
+const BUS_FALLBACK = "N91";
+
+const TUBE_LINE_ID = "piccadilly";
+const TUBE_STOP_ID = "940GZZLUBDS";
+
+const RTT_URL = "http://127.0.0.1:5010/api/trains";
+
+const RTT_RETRIES = 1;
+const RTT_RETRY_DELAY_MS = 1500;
+
+/* ==========================
+   DOM
+   ========================== */
+const topDay = document.getElementById("topDay");
+const topDate = document.getElementById("topDate");
+const topTime = document.getElementById("topTime");
+const lastUpdate = document.getElementById("lastUpdate");
+
+const railList = document.getElementById("railList");
+const railFallback = document.getElementById("railFallback");
+const busList = document.getElementById("busList");
+const tubeList = document.getElementById("tubeList");
+
+/* ==========================
+   HELPERS
+   ========================== */
+const esc = v => String(v ?? "").replace(/[&<>"']/g, m => ({
+  "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+}[m]));
+
+const mins = s => Math.max(0, Math.floor((s || 0) / 60));
+const byTime = (a,b) => (a.timeToStation ?? 1e12) - (b.timeToStation ?? 1e12);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const toSecs = x => {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function setStatus(id, ok){
+  const el = document.getElementById(id);
+  el.textContent = ok ? "na żywo" : "brak danych";
+  el.classList.toggle("muted", !ok);
+  el.classList.toggle("live", ok);
+}
+
+function renderRows(id, rows){
+  const el = document.getElementById(id);
+  el.classList.remove("muted");
+  el.innerHTML = rows.join("");
+}
+
+function renderMessage(id, msg){
+  const el = document.getElementById(id);
+  el.classList.add("muted");
+  el.textContent = msg;
+}
+
+async function fetchJson(url){
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
+  try{
+    const r = await fetch(url, { signal:c.signal });
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function fetchJsonRetry(url, retries, delayMs){
+  try{
+    return await fetchJson(url);
+  }catch(e){
+    if(retries <= 0) throw e;
+    await sleep(delayMs);
+    return await fetchJson(url);
+  }
+}
+
+/* ==========================
+   ETA LOGIC
+   ========================== */
+
+// BUS
+function busEta(item){
+  const secsRaw = toSecs(item.timeToStation);
+  const secs = Math.max(0, secsRaw);
+
+  if (secs < 60) return { text:"Odjazd", depart:true };
+
+  const m = mins(secs);
+  if (m <= 5)  return { text:`${m} min`, bussoon:true };
+  if (m <= 15) return { text:`${m} min`, busgreen:true };
+
+  return {
+    text: new Date(item.expectedArrival)
+      .toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
+  };
+}
+
+// TUBE
+function tubeEta(item){
+  const secs = Math.max(0, toSecs(item.timeToStation));
+  if (secs < 60) return { text:"Odjazd", depart:true };
+
+  const m = mins(secs);
+  if (m <= 15) return { text:`${m} min`, soon15:true };
+
+  return {
+    text: new Date(item.expectedArrival)
+      .toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
+  };
+}
+
+// RAIL
+function hhmmToDate(runDate, hhmm){
+  if(!runDate || !hhmm) return null;
+  const d = new Date(runDate+"T00:00:00");
+  d.setHours(Number(hhmm.slice(0,2)), Number(hhmm.slice(2,4)));
+  const now = new Date();
+  if (d.getTime() < now.getTime() - 6*3600*1000) d.setDate(d.getDate()+1);
+  return d;
+}
+
+function railEta(svc){
+  const dep = hhmmToDate(svc.runDate, svc.etd || svc.std);
+  if (!dep) return { text:svc.etd || svc.std || "--" };
+
+  const diffSec = Math.max(0, Math.floor((dep - new Date())/1000));
+  if (diffSec < 60) return { text:"Odjazd", depart:true };
+
+  const dm = mins(diffSec);
+  if (dm <= 15) return { text:`${dm} min`, soon15:true };
+
+  return {
+    text: dep.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})
+  };
+}
+
+/* ==========================
+   ROW TEMPLATE
+   ========================== */
+function rowHtml({ line, dest, etaText, etaSoon15, etaBusSoon, etaBusGreen, etaDepart, subline }){
+  const cls = [
+    "eta",
+    etaSoon15 ? "soon15" : "",
+    etaBusSoon ? "bussoon" : "",
+    etaBusGreen ? "busgreen" : "",
+    etaDepart ? "depart" : ""
+  ].join(" ").trim();
+
+  return `
+    <div class="row">
+      <div class="topline">
+        <div class="left">
+          <div class="line">${esc(line)}</div>
+          <div class="pipe">|</div>
+          <div class="dest">${esc(dest)}</div>
+        </div>
+        <div class="${cls}">${esc(etaText)}</div>
+      </div>
+      ${subline ? `<div class="subline">${esc(subline)}</div>` : ""}
+    </div>
+  `;
+}
+
+/* ==========================
+   LOADERS
+   ========================== */
+
+// TRAINS
+async function loadRail(){
+  try{
+    const data = await fetchJsonRetry(RTT_URL, RTT_RETRIES, RTT_RETRY_DELAY_MS);
+    const servicesRaw = Array.isArray(data?.services) ? data.services : [];
+
+    const services = servicesRaw.filter(s => !s.cancelled);
+
+    if(!services.length){
+      railList.style.display="none";
+      railFallback.style.display="block";
+      setStatus("railStatus", false);
+      return;
+    }
+
+    railFallback.style.display="none";
+    railList.style.display="block";
+    setStatus("railStatus", true);
+
+    const rows = services
+      .sort((a,b)=>{
+        const da = hhmmToDate(a.runDate, a.etd || a.std) || new Date(8640000000000000);
+        const db = hhmmToDate(b.runDate, b.etd || b.std) || new Date(8640000000000000);
+        return da - db;
+      })
+      .slice(0, MAX_ITEMS)
+      .map(s=>{
+        const eta = railEta(s);
+        return rowHtml({
+          line: s.operator || "Train",
+          dest: s.destination || "—",
+          etaText: eta.text,
+          etaSoon15: eta.soon15,
+          etaBusSoon: false,
+          etaBusGreen: false,
+          etaDepart: eta.depart,
+          subline: s.platform ? `Peron ${s.platform}` : "Peron —"
+        });
+      });
+
+    renderRows("railList", rows);
+  }catch{
+    railList.style.display="none";
+    railFallback.style.display="block";
+    setStatus("railStatus", false);
+  }
+}
+
+// BUS
+async function loadBus(){
+  try{
+    const data = await fetchJson(`https://api.tfl.gov.uk/StopPoint/${BUS_STOP_ID}/Arrivals`);
+    const arr = Array.isArray(data) ? data : [];
+
+    const combined = arr
+      .filter(x => {
+        const ln = String(x.lineName).toUpperCase();
+        return ln === BUS_PRIMARY || ln === BUS_FALLBACK;
+      })
+      .filter(x => (x.timeToStation ?? 0) >= 0)
+      .sort(byTime)
+      .slice(0, MAX_ITEMS);
+
+    if(!combined.length){
+      renderMessage("busList", `Brak danych live dla ${BUS_PRIMARY} i ${BUS_FALLBACK}.`);
+      setStatus("busStatus", false);
+      return;
+    }
+
+    setStatus("busStatus", true);
+
+    const rows = combined.map(x=>{
+      const eta = busEta(x);
+      return rowHtml({
+        line: x.lineName,
+        dest: x.destinationName || "",
+        etaText: eta.text,
+        etaSoon15: eta.soon15,
+        etaBusSoon: eta.bussoon,
+        etaBusGreen: eta.busgreen,
+        etaDepart: eta.depart,
+        subline: null
+      });
+    });
+
+    renderRows("busList", rows);
+  }catch{
+    renderMessage("busList", "Błąd danych bus.");
+    setStatus("busStatus", false);
+  }
+}
+
+// TUBE
+async function loadTube(){
+  try{
+    const data = await fetchJson(`https://api.tfl.gov.uk/Line/${TUBE_LINE_ID}/Arrivals/${TUBE_STOP_ID}`);
+    const arr = Array.isArray(data) ? data : [];
+
+    const westbound = arr
+      .filter(x => /westbound/i.test(x.platformName || ""))
+      .filter(x => (x.timeToStation ?? 0) >= 0)
+      .sort(byTime)
+      .slice(0, MAX_ITEMS);
+
+    if(!westbound.length){
+      renderMessage("tubeList", "Brak danych Westbound.");
+      setStatus("tubeStatus", false);
+      return;
+    }
+
+    setStatus("tubeStatus", true);
+
+    const rows = westbound.map(x=>{
+      const eta = tubeEta(x);
+      return rowHtml({
+        line: "Piccadilly",
+        dest: (x.destinationName || "").replace(/ Underground Station/i, ""),
+        etaText: eta.text,
+        etaSoon15: eta.soon15,
+        etaBusSoon: false,
+        etaBusGreen: false,
+        etaDepart: eta.depart,
+        subline: "Westbound"
+      });
+    });
+
+    renderRows("tubeList", rows);
+  }catch{
+    renderMessage("tubeList", "Błąd danych tube.");
+    setStatus("tubeStatus", false);
+  }
+}
+
+/* ==========================
+   CLOCK + LOOP
+   ========================== */
+const PL_DAYS = ["Niedziela","Poniedziałek","Środa","Czwartek","Piątek","Sobota","Niedziela"];
+// mała poprawka: faktycznie powinno być od Niedzieli do Soboty, ale jeśli masz już poprawne, zostaw
+// jeśli chcesz dokładnie:
+const _PL_DAYS = ["Niedziela","Poniedziałek","Wtorek","Środa","Czwartek","Piątek","Sobota"];
+
+function updateClock(){
+  const d = new Date();
+  topDay.textContent = _PL_DAYS[d.getDay()];
+  topDate.textContent = d.toLocaleDateString('pl-PL',{day:'2-digit',month:'2-digit',year:'numeric'})
+                         .replace(/\./g," / ").replace(/ /g,"");
+  topTime.textContent = d.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+function setLastUpdate(){
+  lastUpdate.textContent =
+    "Ostatnia aktualizacja: " +
+    new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+async function refreshAll(){
+  await Promise.allSettled([loadRail(), loadBus(), loadTube()]);
+  setLastUpdate();
+}
+
+setInterval(updateClock, 1000);
+updateClock();
+
+refreshAll();
+setInterval(refreshAll, REFRESH_MS);
+</script>
+</body>
+</html>
