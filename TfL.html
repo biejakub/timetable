@@ -21,7 +21,7 @@ body{
 #topDate,#lastUpdate{ font-size:22px; color:#9a9a9a; }
 #topTime{ font-size:72px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
 
-.wrap{ padding:26px 60px 60px; display:grid; gap:24px; }
+.wrap{ padding:26px 60px 90px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
 .title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
 .subtitle{ font-size:26px; opacity:.7; margin:0 0 18px 0; }
@@ -57,12 +57,6 @@ body{
 @keyframes livePulse{
   0%,100%{ opacity:.75; transform:scale(1); }
   50%{ opacity:1; transform:scale(1.04); }
-}
-
-.attribution{
-  font-size:18px;
-  color:#7d7d7d;
-  padding:0 60px 28px;
 }
 
 .muted{ opacity:.65; }
@@ -115,8 +109,6 @@ body{
   </section>
 
 </div>
-
-<div class="attribution">Powered by TfL Open Data</div>
 
 <script>
 const API_BASE = "http://127.0.0.1:5010";
