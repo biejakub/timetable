@@ -5,16 +5,21 @@ from collections import deque
 import datetime
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+import importlib
+import json
 import logging
 import os
 import random
+import re
 import threading
 import time
-from typing import Any, Dict, Deque, List, Mapping, Optional, Tuple, TypedDict, cast
+import uuid
+from typing import Any, Dict, Deque, List, Mapping, Optional, Protocol, Tuple, TypedDict, cast
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request, Response
 import requests
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
@@ -110,8 +115,15 @@ MAX_CACHE = env_int("MAX_CACHE", 2000)
 ENABLE_HSTS = env_bool("ENABLE_HSTS", False)
 HSTS_MAX_AGE_SEC = env_int("HSTS_MAX_AGE_SEC", 15552000)
 
+REDIS_URL = os.getenv("REDIS_URL")
+REDIS_PREFIX = os.getenv("REDIS_PREFIX", "timetable_proxy")
+REDIS_LOCK_TTL_SEC = env_int("REDIS_LOCK_TTL_SEC", 15)
+
 APP_HOST = os.getenv("APP_HOST", "127.0.0.1")
 APP_PORT = env_int("APP_PORT", 5010)
+
+TFL_LINE_ID_RE = re.compile(r"^[a-z0-9-]{2,32}$")
+TFL_STOP_ID_RE = re.compile(r"^[A-Za-z0-9]{3,20}$")
 
 JsonDict = Dict[str, Any]
 
@@ -178,6 +190,16 @@ class MissingConfig(Exception):
         super().__init__(message)
 
 
+class SlidingWindowLimiterLike(Protocol):
+    def allow(self) -> Tuple[bool, int]:
+        ...
+
+
+class PerKeyLimiterLike(Protocol):
+    def allow(self, key: str) -> Tuple[bool, int]:
+        ...
+
+
 class SlidingWindowLimiter:
     def __init__(self, limit: int, window_sec: int) -> None:
         self.limit = max(1, limit)
@@ -220,6 +242,156 @@ class PerKeyLimiter:
             return True, 0
 
 
+REDIS_SLIDING_WINDOW_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local member = ARGV[4]
+redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local retry = window
+  if oldest[2] then
+    retry = math.max(1, math.floor(window - (now - tonumber(oldest[2]))))
+  end
+  return {0, retry}
+end
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, window + 1)
+return {1, 0}
+"""
+
+
+class RedisSlidingWindowLimiter:
+    def __init__(self, redis_client: Any, key: str, limit: int, window_sec: int) -> None:
+        self.redis = redis_client
+        self.key = key
+        self.limit = max(1, limit)
+        self.window_sec = max(1, window_sec)
+        self._script = self.redis.register_script(REDIS_SLIDING_WINDOW_LUA)
+
+    def allow(self) -> Tuple[bool, int]:
+        now = time.time()
+        member = f"{now}:{uuid.uuid4().hex}"
+        allowed, retry_after = self._script(
+            keys=[self.key],
+            args=[now, self.window_sec, self.limit, member],
+        )
+        return bool(allowed), int(retry_after)
+
+
+class RedisPerKeyLimiter:
+    def __init__(self, redis_client: Any, key_prefix: str, limit: int, window_sec: int) -> None:
+        self.redis = redis_client
+        self.key_prefix = key_prefix
+        self.limit = max(1, limit)
+        self.window_sec = max(1, window_sec)
+        self._script = self.redis.register_script(REDIS_SLIDING_WINDOW_LUA)
+
+    def allow(self, key: str) -> Tuple[bool, int]:
+        now = time.time()
+        member = f"{now}:{uuid.uuid4().hex}"
+        redis_key = f"{self.key_prefix}:{key}"
+        allowed, retry_after = self._script(
+            keys=[redis_key],
+            args=[now, self.window_sec, self.limit, member],
+        )
+        return bool(allowed), int(retry_after)
+
+
+class HybridSlidingWindowLimiter:
+    def __init__(self, primary: Any, fallback: SlidingWindowLimiterLike) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def allow(self) -> Tuple[bool, int]:
+        try:
+            return self.primary.allow()
+        except Exception as exc:
+            log.warning("Primary limiter failed, using fallback: %s", exc)
+            return self.fallback.allow()
+
+
+class HybridPerKeyLimiter:
+    def __init__(self, primary: Any, fallback: PerKeyLimiterLike) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def allow(self, key: str) -> Tuple[bool, int]:
+        try:
+            return self.primary.allow(key)
+        except Exception as exc:
+            log.warning("Primary limiter failed, using fallback: %s", exc)
+            return self.fallback.allow(key)
+
+
+_redis_client: Optional[Any] = None
+_redis_lock = threading.Lock()
+
+
+def redis_key(*parts: str) -> str:
+    return ":".join([REDIS_PREFIX, *parts])
+
+
+def get_redis_client() -> Optional[Any]:
+    if not REDIS_URL:
+        return None
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    with _redis_lock:
+        if _redis_client is not None:
+            return _redis_client
+        try:
+            redis_module: Any = cast(Any, importlib.import_module("redis"))
+        except ImportError:
+            log.warning("Redis URL set but redis package is missing; using in-memory cache.")
+            return None
+        try:
+            _redis_client = redis_module.Redis.from_url(REDIS_URL, decode_responses=True)
+        except Exception as exc:
+            log.warning("Redis client init failed; using in-memory cache: %s", exc)
+            _redis_client = None
+        return _redis_client
+
+
+def build_limiters() -> Tuple[PerKeyLimiterLike, SlidingWindowLimiterLike, SlidingWindowLimiterLike]:
+    fallback_api = PerKeyLimiter(API_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
+    fallback_rtt = SlidingWindowLimiter(RTT_OUTBOUND_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
+    fallback_tfl = SlidingWindowLimiter(TFL_OUTBOUND_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
+    redis_client = get_redis_client()
+    if redis_client is None:
+        return fallback_api, fallback_rtt, fallback_tfl
+
+    api = HybridPerKeyLimiter(
+        RedisPerKeyLimiter(
+            redis_client, redis_key("rl", "api"), API_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC
+        ),
+        fallback_api,
+    )
+    rtt = HybridSlidingWindowLimiter(
+        RedisSlidingWindowLimiter(
+            redis_client,
+            redis_key("rl", "rtt"),
+            RTT_OUTBOUND_RATE_LIMIT_PER_MIN,
+            RATE_LIMIT_WINDOW_SEC,
+        ),
+        fallback_rtt,
+    )
+    tfl = HybridSlidingWindowLimiter(
+        RedisSlidingWindowLimiter(
+            redis_client,
+            redis_key("rl", "tfl"),
+            TFL_OUTBOUND_RATE_LIMIT_PER_MIN,
+            RATE_LIMIT_WINDOW_SEC,
+        ),
+        fallback_tfl,
+    )
+    return api, rtt, tfl
+
+
 _hhy_cache: Dict[str, Tuple[Optional[Tuple[str, ...]], float]] = {}
 _hhy_lock = threading.Lock()
 
@@ -231,12 +403,93 @@ _tfl_cache: Dict[str, CacheEntry] = {}
 _tfl_lock = threading.Lock()
 _tfl_refreshing: set[str] = set()
 
-api_limiter = PerKeyLimiter(API_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
-rtt_outbound_limiter = SlidingWindowLimiter(RTT_OUTBOUND_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
-tfl_outbound_limiter = SlidingWindowLimiter(TFL_OUTBOUND_RATE_LIMIT_PER_MIN, RATE_LIMIT_WINDOW_SEC)
+api_limiter, rtt_outbound_limiter, tfl_outbound_limiter = build_limiters()
 
 app = Flask(__name__)
-session = requests.Session()
+if TRUST_PROXY_HEADERS:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1
+    )
+
+_session_local = threading.local()
+
+
+def get_session() -> requests.Session:
+    sess = getattr(_session_local, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        _session_local.session = sess
+    return sess
+
+
+def redis_cache_key(kind: str, suffix: Optional[str] = None) -> str:
+    if suffix:
+        return redis_key("cache", kind, suffix)
+    return redis_key("cache", kind)
+
+
+def redis_lock_key(kind: str, suffix: Optional[str] = None) -> str:
+    if suffix:
+        return redis_key("lock", kind, suffix)
+    return redis_key("lock", kind)
+
+
+def redis_get_cache_entry(key: str) -> Optional[CacheEntry]:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(key)
+    except Exception as exc:
+        log.warning("Redis read failed; using in-memory cache: %s", exc)
+        return None
+    if not raw:
+        return None
+    try:
+        payload_obj = json.loads(raw)
+    except ValueError:
+        log.warning("Redis cache corrupted for key: %s", key)
+        return None
+    if not isinstance(payload_obj, dict):
+        log.warning("Redis cache payload is not a dict for key: %s", key)
+        return None
+    payload = cast(Dict[str, Any], payload_obj)
+    return CacheEntry(
+        data=payload.get("data"),
+        expires_at=float(payload.get("expires_at", 0)),
+        stale_until=float(payload.get("stale_until", 0)),
+        fetched_at=str(payload.get("fetched_at", "")),
+        ttl_sec=int(payload.get("ttl_sec", 0)),
+    )
+
+
+def redis_set_cache_entry(key: str, entry: CacheEntry) -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    payload: Dict[str, Any] = {
+        "data": entry.data,
+        "expires_at": entry.expires_at,
+        "stale_until": entry.stale_until,
+        "fetched_at": entry.fetched_at,
+        "ttl_sec": entry.ttl_sec,
+    }
+    ttl = max(1, int(entry.stale_until - time.time()))
+    try:
+        client.set(key, json.dumps(payload), ex=ttl)
+    except Exception as exc:
+        log.warning("Redis write failed; using in-memory cache: %s", exc)
+
+
+def acquire_redis_lock(key: str) -> bool:
+    client = get_redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.set(key, "1", nx=True, ex=REDIS_LOCK_TTL_SEC))
+    except Exception as exc:
+        log.warning("Redis lock failed; continuing without lock: %s", exc)
+        return False
 
 
 def get_client_ip() -> str:
@@ -305,13 +558,21 @@ def compute_backoff(attempt: int, base: float, maximum: float) -> float:
     return delay * (0.7 + random.random() * 0.6)
 
 
+def is_valid_tfl_line_id(value: str) -> bool:
+    return bool(TFL_LINE_ID_RE.fullmatch(value))
+
+
+def is_valid_tfl_stop_id(value: str) -> bool:
+    return bool(TFL_STOP_ID_RE.fullmatch(value))
+
+
 def request_json(
     url: str,
     *,
     auth: Optional[Tuple[str, str]] = None,
     params: Optional[Dict[str, str]] = None,
     timeout: Optional[Tuple[float, float]] = None,
-    limiter: Optional[SlidingWindowLimiter] = None,
+    limiter: Optional[SlidingWindowLimiterLike] = None,
     max_retries: int = 0,
     backoff_base: float = 0.5,
     backoff_max: float = 6.0,
@@ -325,7 +586,7 @@ def request_json(
                 raise OutboundRateLimited(retry_after)
 
         try:
-            resp = session.get(
+            resp = get_session().get(
                 url,
                 auth=auth,
                 params=params,
@@ -467,6 +728,12 @@ def add_common_headers(resp: Response) -> Response:
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    resp.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+    )
 
     if ENABLE_HSTS and request.is_secure:
         resp.headers.setdefault(
@@ -476,7 +743,7 @@ def add_common_headers(resp: Response) -> Response:
     return resp
 
 
-# HHY cache bounds protect memory under request spikes.
+# Via cache bounds protect memory under request spikes.
 def prune_hhy_cache(now: float) -> None:
     with _hhy_lock:
         if not _hhy_cache:
@@ -489,7 +756,7 @@ def prune_hhy_cache(now: float) -> None:
 
 
 def service_via(uid: str, run_date: str) -> Optional[Tuple[str, ...]]:
-    now = time.time()
+    now = time.monotonic()
     cache_key = f"{uid}:{run_date}"
     with _hhy_lock:
         cached = _hhy_cache.get(cache_key)
@@ -528,10 +795,10 @@ def service_via(uid: str, run_date: str) -> Optional[Tuple[str, ...]]:
                 candidates.sort(key=lambda item: item[1])
                 via = tuple(code for code, _ in candidates)
     except (UpstreamError, UpstreamRateLimited, MissingConfig) as exc:
-        log.warning("HHY check failed: %s", exc)
+        log.warning("Via check failed: %s", exc)
         via = None
     except Exception as exc:
-        log.warning("HHY check failed: %s", exc)
+        log.warning("Via check failed: %s", exc)
         via = None
 
     with _hhy_lock:
@@ -547,12 +814,11 @@ def build_trains_payload(services_out: List[JsonDict], ttl_sec: int) -> Dict[str
     }
 
 
-def fetch_trains() -> CacheEntry:
-    now = time.time()
+def fetch_trains_entry(now_expiry: float, now_mono: float) -> CacheEntry:
     data, headers = rtt_get_json("/json/search/AAP")
     ttl_sec = compute_ttl(headers, TRAIN_CACHE_MIN_TTL_SEC)
 
-    prune_hhy_cache(now)
+    prune_hhy_cache(now_mono)
 
     services = cast(List[Service], data.get("services") or [])
     services_out: List[JsonDict] = []
@@ -600,14 +866,19 @@ def fetch_trains() -> CacheEntry:
     payload: Dict[str, Any] = build_trains_payload(services_out, ttl_sec)
     return CacheEntry(
         data=payload,
-        expires_at=now + ttl_sec,
-        stale_until=now + ttl_sec + TRAIN_CACHE_STALE_SEC,
+        expires_at=now_expiry + ttl_sec,
+        stale_until=now_expiry + ttl_sec + TRAIN_CACHE_STALE_SEC,
         fetched_at=payload["fetched_at"],
         ttl_sec=ttl_sec,
     )
 
 
-def refresh_trains_async() -> None:
+def fetch_trains() -> CacheEntry:
+    now = time.monotonic()
+    return fetch_trains_entry(now, now)
+
+
+def refresh_trains_async_memory() -> None:
     global _trains_cache, _trains_refreshing
     try:
         entry = fetch_trains()
@@ -620,9 +891,9 @@ def refresh_trains_async() -> None:
             _trains_refreshing = False
 
 
-def get_trains_cached() -> CacheEntry:
+def get_trains_cached_memory() -> CacheEntry:
     global _trains_cache, _trains_refreshing
-    now = time.time()
+    now = time.monotonic()
     with _trains_lock:
         entry = _trains_cache
         if entry and now < entry.expires_at:
@@ -630,7 +901,7 @@ def get_trains_cached() -> CacheEntry:
         if entry and now < entry.stale_until:
             if not _trains_refreshing:
                 _trains_refreshing = True
-                threading.Thread(target=refresh_trains_async, daemon=True).start()
+                threading.Thread(target=refresh_trains_async_memory, daemon=True).start()
             return entry
 
     entry = fetch_trains()
@@ -639,8 +910,46 @@ def get_trains_cached() -> CacheEntry:
     return entry
 
 
-def fetch_tfl(path: str) -> CacheEntry:
+def refresh_trains_async_redis(cache_key: str, lock_key: str) -> None:
+    try:
+        entry = fetch_trains_entry(time.time(), time.monotonic())
+        redis_set_cache_entry(cache_key, entry)
+    except Exception as exc:
+        log.warning("Train refresh failed: %s", exc)
+    finally:
+        client = get_redis_client()
+        if client is not None:
+            try:
+                client.delete(lock_key)
+            except Exception as exc:
+                log.warning("Redis lock release failed: %s", exc)
+
+
+def get_trains_cached_redis() -> CacheEntry:
+    cache_key = redis_cache_key("trains")
+    lock_key = redis_lock_key("trains")
     now = time.time()
+    entry = redis_get_cache_entry(cache_key)
+    if entry and now < entry.expires_at:
+        return entry
+    if entry and now < entry.stale_until:
+        if acquire_redis_lock(lock_key):
+            threading.Thread(
+                target=refresh_trains_async_redis, args=(cache_key, lock_key), daemon=True
+            ).start()
+        return entry
+    entry = fetch_trains_entry(now, time.monotonic())
+    redis_set_cache_entry(cache_key, entry)
+    return entry
+
+
+def get_trains_cached() -> CacheEntry:
+    if get_redis_client() is not None:
+        return get_trains_cached_redis()
+    return get_trains_cached_memory()
+
+
+def fetch_tfl_entry(now_expiry: float, path: str) -> CacheEntry:
     data, headers = tfl_get_json(path)
     ttl_sec = compute_ttl(headers, TFL_CACHE_MIN_TTL_SEC)
     payload: Dict[str, Any] = {
@@ -650,14 +959,18 @@ def fetch_tfl(path: str) -> CacheEntry:
     }
     return CacheEntry(
         data=payload,
-        expires_at=now + ttl_sec,
-        stale_until=now + ttl_sec + TFL_CACHE_STALE_SEC,
+        expires_at=now_expiry + ttl_sec,
+        stale_until=now_expiry + ttl_sec + TFL_CACHE_STALE_SEC,
         fetched_at=payload["fetched_at"],
         ttl_sec=ttl_sec,
     )
 
 
-def refresh_tfl_async(cache_key: str, path: str) -> None:
+def fetch_tfl(path: str) -> CacheEntry:
+    return fetch_tfl_entry(time.monotonic(), path)
+
+
+def refresh_tfl_async_memory(cache_key: str, path: str) -> None:
     try:
         entry = fetch_tfl(path)
         with _tfl_lock:
@@ -669,8 +982,8 @@ def refresh_tfl_async(cache_key: str, path: str) -> None:
             _tfl_refreshing.discard(cache_key)
 
 
-def get_tfl_cached(cache_key: str, path: str) -> CacheEntry:
-    now = time.time()
+def get_tfl_cached_memory(cache_key: str, path: str) -> CacheEntry:
+    now = time.monotonic()
     with _tfl_lock:
         entry = _tfl_cache.get(cache_key)
         if entry and now < entry.expires_at:
@@ -679,7 +992,7 @@ def get_tfl_cached(cache_key: str, path: str) -> CacheEntry:
             if cache_key not in _tfl_refreshing:
                 _tfl_refreshing.add(cache_key)
                 threading.Thread(
-                    target=refresh_tfl_async, args=(cache_key, path), daemon=True
+                    target=refresh_tfl_async_memory, args=(cache_key, path), daemon=True
                 ).start()
             return entry
 
@@ -687,6 +1000,45 @@ def get_tfl_cached(cache_key: str, path: str) -> CacheEntry:
     with _tfl_lock:
         _tfl_cache[cache_key] = entry
     return entry
+
+
+def refresh_tfl_async_redis(cache_key: str, path: str, lock_key: str) -> None:
+    try:
+        entry = fetch_tfl_entry(time.time(), path)
+        redis_set_cache_entry(redis_cache_key("tfl", cache_key), entry)
+    except Exception as exc:
+        log.warning("TfL refresh failed: %s", exc)
+    finally:
+        client = get_redis_client()
+        if client is not None:
+            try:
+                client.delete(lock_key)
+            except Exception as exc:
+                log.warning("Redis lock release failed: %s", exc)
+
+
+def get_tfl_cached_redis(cache_key: str, path: str) -> CacheEntry:
+    cache_key_full = redis_cache_key("tfl", cache_key)
+    lock_key = redis_lock_key("tfl", cache_key)
+    now = time.time()
+    entry = redis_get_cache_entry(cache_key_full)
+    if entry and now < entry.expires_at:
+        return entry
+    if entry and now < entry.stale_until:
+        if acquire_redis_lock(lock_key):
+            threading.Thread(
+                target=refresh_tfl_async_redis, args=(cache_key, path, lock_key), daemon=True
+            ).start()
+        return entry
+    entry = fetch_tfl_entry(now, path)
+    redis_set_cache_entry(cache_key_full, entry)
+    return entry
+
+
+def get_tfl_cached(cache_key: str, path: str) -> CacheEntry:
+    if get_redis_client() is not None:
+        return get_tfl_cached_redis(cache_key, path)
+    return get_tfl_cached_memory(cache_key, path)
 
 
 @app.route("/api/trains", methods=["GET", "OPTIONS"])
@@ -736,6 +1088,14 @@ def tfl_stop_arrivals(stop_id: str) -> Response:
     if request.method == "OPTIONS":
         return make_response("", 204)
 
+    if not is_valid_tfl_stop_id(stop_id):
+        return error_response(
+            400,
+            "invalid_parameter",
+            "Invalid stop_id",
+            empty_key="data",
+        )
+
     path = f"/StopPoint/{stop_id}/Arrivals"
     cache_key = f"stop:{stop_id}"
 
@@ -770,6 +1130,22 @@ def tfl_stop_arrivals(stop_id: str) -> Response:
 def tfl_line_arrivals(line_id: str, stop_id: str) -> Response:
     if request.method == "OPTIONS":
         return make_response("", 204)
+
+    line_id = line_id.lower()
+    if not is_valid_tfl_line_id(line_id):
+        return error_response(
+            400,
+            "invalid_parameter",
+            "Invalid line_id",
+            empty_key="data",
+        )
+    if not is_valid_tfl_stop_id(stop_id):
+        return error_response(
+            400,
+            "invalid_parameter",
+            "Invalid stop_id",
+            empty_key="data",
+        )
 
     path = f"/Line/{line_id}/Arrivals/{stop_id}"
     cache_key = f"line:{line_id}:{stop_id}"

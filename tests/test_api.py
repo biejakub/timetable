@@ -67,3 +67,18 @@ def test_secrets_not_leaked(monkeypatch):
     body = resp.get_data(as_text=True)
     assert "secret_user" not in body
     assert "secret_pass" not in body
+
+
+def test_tfl_validation(monkeypatch):
+    mod = load_module(monkeypatch)
+    client = mod.app.test_client()
+
+    resp = client.get("/api/tfl/stop/invalid!id/arrivals")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["error"]["code"] == "invalid_parameter"
+
+    resp = client.get("/api/tfl/line/invalid!/arrivals/940GZZLUBDS")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["error"]["code"] == "invalid_parameter"

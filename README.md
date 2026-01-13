@@ -1,55 +1,60 @@
 # Timetable proxy (RTT + TfL)
 
-Serwer proxy dla dashboardu TfL. Pobiera odjazdy z RTT i dane z TfL, stosuje
-cache + rate limiting, a następnie wystawia JSON dla frontendu.
+Proxy server for the TfL dashboard. It fetches departures from RTT and data
+from TfL, applies caching and rate limiting, and exposes JSON for the frontend.
 
-## Wymagania
+## Requirements
 - Python 3.9+
 - pip
 
-## Instalacja
+## Install
 ```bash
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Konfiguracja (.env)
-Wymagane:
-- `RTT_USER` – login RTT
-- `RTT_PASS` – hasło RTT
+## Configuration (.env)
+Required:
+- `RTT_USER` - RTT username
+- `RTT_PASS` - RTT password
 
-Opcjonalne (zalecane):
-- `TFL_APP_ID` – TfL app_id
-- `TFL_APP_KEY` – TfL app_key
+Optional (recommended):
+- `TFL_APP_ID` - TfL app_id
+- `TFL_APP_KEY` - TfL app_key
 
-Bezpieczeństwo i CORS:
-- `CORS_ALLOWED_ORIGINS` – lista originów CSV (domyślnie localhost)
-- `CORS_ALLOW_NULL_ORIGIN` – `1/true` jeśli UI działa jako `file://`
-- `TRUST_PROXY_HEADERS` – `1/true` jeśli reverse proxy ustawia `X-Forwarded-For`
-- `ENABLE_HSTS` – `1/true` tylko przy HTTPS end-to-end
-- `HSTS_MAX_AGE_SEC` – czas HSTS, np. `15552000`
+Security and CORS:
+- `CORS_ALLOWED_ORIGINS` - CSV allowlist (default: localhost)
+- `CORS_ALLOW_NULL_ORIGIN` - `1/true` if the UI runs as `file://`
+- `TRUST_PROXY_HEADERS` - `1/true` if a reverse proxy sets `X-Forwarded-*`
+- `ENABLE_HSTS` - `1/true` only with end-to-end HTTPS
+- `HSTS_MAX_AGE_SEC` - HSTS max-age, e.g. `15552000`
 
-Limity i cache:
-- `API_RATE_LIMIT_PER_MIN` – limit na klienta (IP), domyślnie 60
-- `RTT_OUTBOUND_RATE_LIMIT_PER_MIN` – globalny limit outbound do RTT
-- `TFL_OUTBOUND_RATE_LIMIT_PER_MIN` – globalny limit outbound do TfL  
-  (domyślnie 50 bez kluczy, 500 z kluczami)
-- `TRAIN_CACHE_MIN_TTL_SEC` – minimalny TTL dla /api/trains (domyślnie 30)
-- `TRAIN_CACHE_STALE_SEC` – stale-while-revalidate dla /api/trains (domyślnie 60)
-- `TFL_CACHE_MIN_TTL_SEC` – minimalny TTL dla proxy TfL (domyślnie 30)
-- `TFL_CACHE_STALE_SEC` – stale-while-revalidate dla proxy TfL (domyślnie 60)
+Limits and cache:
+- `API_RATE_LIMIT_PER_MIN` - per-client (IP) limit, default 60
+- `RTT_OUTBOUND_RATE_LIMIT_PER_MIN` - global outbound limit to RTT
+- `TFL_OUTBOUND_RATE_LIMIT_PER_MIN` - global outbound limit to TfL
+  (default 50 without keys, 500 with keys)
+- `TRAIN_CACHE_MIN_TTL_SEC` - minimum TTL for `/api/trains` (default 30)
+- `TRAIN_CACHE_STALE_SEC` - stale-while-revalidate for `/api/trains` (default 60)
+- `TFL_CACHE_MIN_TTL_SEC` - minimum TTL for TfL proxy (default 30)
+- `TFL_CACHE_STALE_SEC` - stale-while-revalidate for TfL proxy (default 60)
 
-Uruchomienie:
-- `APP_HOST` – domyślnie `127.0.0.1`
-- `APP_PORT` – domyślnie `5010`
+Redis (optional shared cache + rate limiting):
+- `REDIS_URL` - Redis connection URL
+- `REDIS_PREFIX` - key prefix (default `timetable_proxy`)
+- `REDIS_LOCK_TTL_SEC` - lock TTL for background refresh (default 15)
 
-## Uruchomienie (dev)
+Runtime:
+- `APP_HOST` - default `127.0.0.1`
+- `APP_PORT` - default `5010`
+
+## Run (dev)
 ```bash
 python rtt_proxy.py
 ```
 
-## Uruchomienie (prod)
+## Run (prod)
 Linux (WSGI):
 ```bash
 pip install gunicorn
@@ -62,45 +67,50 @@ pip install waitress
 waitress-serve --listen=127.0.0.1:5010 rtt_proxy:app
 ```
 
-Zalecane jest uruchamianie za reverse proxy z TLS. Jeśli używasz proxy,
-ustaw `TRUST_PROXY_HEADERS=1` i dodaj własne rate limiting po stronie proxy.
+Run behind a reverse proxy with TLS. If a proxy sets `X-Forwarded-*`, set
+`TRUST_PROXY_HEADERS=1` so `ProxyFix` can read the forwarded scheme and IP.
+Add extra rate limiting on the proxy if needed.
 
-## Endpointy
+If `REDIS_URL` is not set or Redis is unavailable, caching and rate limiting
+fall back to in-memory per process.
+
+## Endpoints
 `GET /api/trains`
-- Zwraca odjazdy z AAP przez HHY (kierunek AAP -> HHY).
-- Odpowiedź: `services`, `fetched_at`, `cache_ttl_sec`.
+- Departures from AAP with `via` as a list of CRS codes (ordered after AAP).
+- Response: `services`, `fetched_at`, `cache_ttl_sec`.
 
-`GET /api/tfl/stop/{stopId}/arrivals`  
+`GET /api/tfl/stop/{stopId}/arrivals`
 `GET /api/tfl/line/{lineId}/arrivals/{stopId}`
-- Proxy danych TfL.
-- Odpowiedź: `data`, `fetched_at`, `cache_ttl_sec`.
+- TfL proxy data.
+- Response: `data`, `fetched_at`, `cache_ttl_sec`.
 
-## Odświeżanie i cache (compliance)
-- Proxy respektuje `Cache-Control`, `Age` i `Expires`.
-- Frontend oblicza minimalny polling na podstawie TTL i fallbacku 60s.
-- Stosowany jest `stale-while-revalidate` (cache serwowany, odświeżanie w tle).
-- Retry z exponential backoff + jitter; honorowany `Retry-After`.
+## Refresh and cache (compliance)
+- The proxy honors `Cache-Control`, `Age`, and `Expires`.
+- The frontend computes the polling interval from TTL with a 60s fallback.
+- `stale-while-revalidate` is used (serve cache and refresh in background).
+- Retry uses exponential backoff with jitter and honors `Retry-After`.
 
-## Limity (TfL + RTT)
-- TfL Open Data: 50 req/min bez kluczy, 500 req/min z kluczami.
-- Limity są egzekwowane w backendzie przez `TFL_OUTBOUND_RATE_LIMIT_PER_MIN`.
-- RTT: limit outbound kontrolowany przez `RTT_OUTBOUND_RATE_LIMIT_PER_MIN`.
-- Dodatkowo obowiązuje limit na klienta (IP): `API_RATE_LIMIT_PER_MIN`.
+## Limits (TfL + RTT)
+- TfL Open Data: 50 req/min without keys, 500 req/min with keys.
+- Limits are enforced in the backend via `TFL_OUTBOUND_RATE_LIMIT_PER_MIN`.
+- RTT outbound limit is controlled via `RTT_OUTBOUND_RATE_LIMIT_PER_MIN`.
+- There is also a per-client IP limit: `API_RATE_LIMIT_PER_MIN`.
 
-## Atrybucja (TfL)
-W UI znajduje się widoczny tekst: `Powered by TfL Open Data`.
+## Attribution (TfL)
+The UI shows a visible `Powered by TfL Open Data` label.
 
-## Bezpieczeństwo
-- CORS tylko z allowlisty (ENV).
-- Nagłówki: `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`.
-- Sekrety wyłącznie z ENV, brak zwracania w odpowiedziach.
+## Security
+- CORS is allowlist-only (ENV).
+- Headers: `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`,
+  `Content-Security-Policy`, `Permissions-Policy`.
+- Secrets only from ENV; not returned in responses.
 
-## Audyt zależności
+## Dependency audit
 ```bash
 pip-audit -r requirements.txt
 ```
 
-## Testy
+## Tests
 ```bash
 pytest
 ```
