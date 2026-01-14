@@ -140,8 +140,8 @@ fall back to in-memory per process.
 ## Colour legend (ETA)
 The UI shows:
 - `Due` for departures under 60 seconds
-- `X min` for departures under 31 minutes
-- Absolute time (`HH:MM`) for departures 31 minutes or later
+- `X min` for departures under 21 minutes
+- Absolute time (`HH:MM`) for departures 21 minutes or later
 
 Colours are based on time-to-departure vs walking time for each mode.
 
@@ -157,8 +157,8 @@ Legend:
 - Red: ETA ≤ 60 s (`Due`)
 - Yellow: ETA > 60 s and < walk_time
 - Green: ETA ≥ walk_time and ≤ walk_time + buffer (inclusive, up to `:59`)
-- Blue: ETA > walk_time + buffer and ≤ 30:59
-- Default (no color): ETA ≥ 31:00 (HH:MM)
+- Blue: ETA > walk_time + buffer and ≤ 20:59
+- Default (no color): ETA ≥ 21:00 (HH:MM)
 
 Accessibility:
 - ETA is rendered as plain coloured text (no background or border),

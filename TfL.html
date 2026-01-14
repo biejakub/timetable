@@ -261,10 +261,10 @@ function formatEtaText(etaSec){
   if (etaSec === null) return "--";
   if (etaSec <= ETA_RED_SEC) return "Due";
 
-  // <= 30:59 -> minuty
-  if (etaSec < 31 * 60) return `${mins(etaSec)} min`;
+  // <= 20:59 -> minuty
+  if (etaSec < 21 * 60) return `${mins(etaSec)} min`;
 
-  // >= 31:00 -> HH:MM
+  // >= 21:00 -> HH:MM
   return formatHHMMFromNow(etaSec);
 }
 
@@ -272,8 +272,8 @@ function getEtaClass(etaSec, transportType){
   if (etaSec === null) return "";
   if (etaSec <= ETA_RED_SEC) return "eta-red";
 
-  // >= 31:00 -> HH:MM -> default (no color class)
-  if (etaSec >= 31 * 60) return "";
+  // >= 21:00 -> HH:MM -> default (no color class)
+  if (etaSec >= 21 * 60) return "";
 
   const walkMin = ETA_WALK_MIN[transportType] ?? 0;
   const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
@@ -289,6 +289,8 @@ async function fetchJsonWithMeta(url){
   const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
   try{
     const r = await fetch(url, { signal:c.signal });
+    const serverDate = r.headers.get("Date");
+    const fetchedAt = Number.isFinite(Date.parse(serverDate)) ? Date.parse(serverDate) : Date.now();
     const retryAfterSec = parseRetryAfter(r.headers.get("Retry-After"));
     const headerTtl = parseCacheTtlSeconds(r.headers);
     if(!r.ok){
@@ -302,7 +304,8 @@ async function fetchJsonWithMeta(url){
     return {
       payload,
       ttlSec: Math.max(headerTtl, payloadTtl),
-      retryAfterSec
+      retryAfterSec,
+      fetchedAt
     };
   } finally {
     clearTimeout(t);
@@ -338,7 +341,7 @@ function rowHtml({ line, dest, etaText, etaClass, subline }){
 
 async function loadRail(){
   try{
-    const { payload, ttlSec } = await fetchJsonWithMeta(RTT_URL);
+    const { payload, ttlSec, fetchedAt } = await fetchJsonWithMeta(RTT_URL);
     const servicesRaw = Array.isArray(payload?.services) ? payload.services : [];
     const services = servicesRaw.filter(s => !s.cancelled);
 
@@ -383,7 +386,7 @@ async function loadRail(){
     renderRows("railList", rows);
     resetBackoff("rail");
     schedule("rail", loadRail, nextDelayFromTtl(ttlSec));
-    setLastUpdate();
+    setLastUpdate(fetchedAt);
   }catch(err){
     railList.style.display="none";
     railFallback.style.display="block";
@@ -394,7 +397,7 @@ async function loadRail(){
 
 async function loadBus(){
   try{
-    const { payload, ttlSec } = await fetchJsonWithMeta(BUS_URL);
+    const { payload, ttlSec, fetchedAt } = await fetchJsonWithMeta(BUS_URL);
     const arr = Array.isArray(payload?.data) ? payload.data : [];
 
     const combined = arr
@@ -431,7 +434,7 @@ async function loadBus(){
     renderRows("busList", rows);
     resetBackoff("bus");
     schedule("bus", loadBus, nextDelayFromTtl(ttlSec));
-    setLastUpdate();
+    setLastUpdate(fetchedAt);
   }catch(err){
     renderMessage("busList", "Bus data error.");
     setStatus("busStatus", false);
@@ -441,7 +444,7 @@ async function loadBus(){
 
 async function loadTube(){
   try{
-    const { payload, ttlSec } = await fetchJsonWithMeta(TUBE_URL);
+    const { payload, ttlSec, fetchedAt } = await fetchJsonWithMeta(TUBE_URL);
     const arr = Array.isArray(payload?.data) ? payload.data : [];
 
     const westbound = arr
@@ -475,7 +478,7 @@ async function loadTube(){
     renderRows("tubeList", rows);
     resetBackoff("tube");
     schedule("tube", loadTube, nextDelayFromTtl(ttlSec));
-    setLastUpdate();
+    setLastUpdate(fetchedAt);
   }catch(err){
     renderMessage("tubeList", "Tube data error.");
     setStatus("tubeStatus", false);
@@ -500,14 +503,21 @@ function updateClock(){
   topTime.textContent = d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-function setLastUpdate(){
+function setLastUpdate(ts){
+  const t = Number.isFinite(ts) ? new Date(ts) : new Date();
   lastUpdate.textContent =
     "Last update: " +
-    new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    t.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-setInterval(updateClock, 1000);
-updateClock();
+function scheduleClockTick(){
+  updateClock();
+  const now = Date.now();
+  const delay = 1000 - (now % 1000);
+  setTimeout(scheduleClockTick, delay);
+}
+
+scheduleClockTick();
 
 loadRail();
 loadBus();
