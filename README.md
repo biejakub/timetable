@@ -137,7 +137,9 @@ fall back to in-memory per process.
 - Response: `data`, `fetched_at`, `cache_ttl_sec`.
 
 ## Colour legend (ETA)
-Colours are based on time-to-departure vs walking time for each mode.
+The UI always shows `Due` for departures under 60 seconds and `X min` for all
+other ETAs (no HH:MM). Colours are based on time-to-departure vs walking time
+for each mode.
 
 Walk times:
 - Train (Alexandra Palace): 8 min
@@ -148,10 +150,14 @@ Buffer: 4 min (train/tube), 2 min (bus)
 Thresholds: red < 60 s, blue >= 20 min
 
 Legend:
-- Red: ETA < 60 s (due now)
+- Red: ETA < 60 s (`Due`)
 - Yellow: ETA < walk_time + buffer and >= 60 s (hurry - tight window)
 - Green: ETA in [walk_time + buffer, 20 min) (comfortably on time)
 - Blue: ETA >= 20 min (informational / later)
+
+Accessibility:
+- ETA is rendered as a coloured badge with contrast text, border, and shadow
+  to remain readable on both white and black backgrounds.
 
 ## Fair-use and best practice
 - The proxy honors `Cache-Control`, `Age`, and `Expires`.

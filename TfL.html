@@ -6,6 +6,18 @@
 <title>TfL Panel</title>
 
 <style>
+:root{
+  --eta-border: rgba(0, 0, 0, 0.35);
+  --eta-shadow: rgba(0, 0, 0, 0.25);
+}
+
+@media (prefers-color-scheme: dark){
+  :root{
+    --eta-border: rgba(0, 0, 0, 0.6);
+    --eta-shadow: rgba(0, 0, 0, 0.5);
+  }
+}
+
 body{
   margin:0; background:#000; color:#fff; font-family:sans-serif;
   min-height:100vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
@@ -38,10 +50,19 @@ body{
 
 .eta{ font-weight:700; white-space:nowrap; }
 
-.eta.red{ color:#ff4b4b; }
-.eta.yellow{ color:#ffd54d; }
-.eta.green{ color:#4cff4c; }
-.eta.blue{ color:#45a9ff; }
+.eta-badge{
+  padding:2px 12px;
+  border-radius:999px;
+  background:var(--eta-bg);
+  color:var(--eta-text);
+  border:1px solid var(--eta-border);
+  box-shadow:0 1px 2px var(--eta-shadow);
+}
+
+.eta-red{ --eta-bg:#ff4b4b; --eta-text:#111; }
+.eta-yellow{ --eta-bg:#ffd54d; --eta-text:#111; }
+.eta-green{ --eta-bg:#4cff4c; --eta-text:#111; }
+.eta-blue{ --eta-bg:#45a9ff; --eta-text:#111; }
 
 .subline{ font-size:26px; color:#9a9a9a; line-height:1.25; padding-bottom:4px; }
 
@@ -253,34 +274,22 @@ function parseCacheTtlSeconds(headers){
   return 0;
 }
 
-function toDate(value){
-  if (!value) return null;
-  const ts = Date.parse(value);
-  return Number.isFinite(ts) ? new Date(ts) : null;
-}
-
-function formatClockTime(dt){
-  if (!dt) return "--";
-  return dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-}
-
-function formatEtaText(etaSec, clockTime){
-  if (etaSec === null) return { text: clockTime || "--" };
+function formatEtaText(etaSec){
+  if (etaSec === null) return { text: "--" };
   if (etaSec < ETA_RED_SEC) return { text: "Due" };
-  if (etaSec <= ETA_BLUE_MIN * 60) return { text: `${mins(etaSec)} min` };
-  return { text: clockTime || "--" };
+  return { text: `${mins(etaSec)} min` };
 }
 
 function getEtaClass(etaSec, transportType){
-  if (etaSec === null) return "blue";
-  if (etaSec < ETA_RED_SEC) return "red";
-  if (etaSec >= ETA_BLUE_MIN * 60) return "blue";
+  if (etaSec === null) return "eta-blue";
+  if (etaSec < ETA_RED_SEC) return "eta-red";
+  if (etaSec >= ETA_BLUE_MIN * 60) return "eta-blue";
   const walkMin = ETA_WALK_MIN[transportType] ?? 0;
   const walkSec = walkMin * 60;
   const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
   const bufferSec = bufferMin * 60;
-  if (etaSec >= walkSec + bufferSec) return "green";
-  return "yellow";
+  if (etaSec >= walkSec + bufferSec) return "eta-green";
+  return "eta-yellow";
 }
 
 async function fetchJsonWithMeta(url){
@@ -318,7 +327,7 @@ function hhmmToDate(runDate, hhmm){
 }
 
 function rowHtml({ line, dest, etaText, etaClass, subline }){
-  const cls = ["eta", etaClass].filter(Boolean).join(" ");
+  const cls = ["eta", "eta-badge", etaClass].filter(Boolean).join(" ");
 
   return `
     <div class="row">
@@ -363,8 +372,7 @@ async function loadRail(){
       .map(s=>{
         const dep = hhmmToDate(s.runDate, s.etd || s.std);
         const etaSec = dep ? Math.max(0, Math.floor((dep - new Date()) / 1000)) : null;
-        const clockTime = dep ? formatClockTime(dep) : (s.etd || s.std || "--");
-        const eta = formatEtaText(etaSec, clockTime);
+        const eta = formatEtaText(etaSec);
         const viaCodes = Array.isArray(s.via) ? s.via : (s.via ? [s.via] : []);
         const viaNames = viaCodes.map(code => (
           code === "HHY" ? "Highbury & Islington"
@@ -418,7 +426,7 @@ async function loadBus(){
 
     const rows = combined.map(x=>{
       const etaSec = toEtaSeconds(x.timeToStation);
-      const eta = formatEtaText(etaSec, formatClockTime(toDate(x.expectedArrival)));
+      const eta = formatEtaText(etaSec);
       return rowHtml({
         line: x.lineName,
         dest: x.destinationName || "",
@@ -462,7 +470,7 @@ async function loadTube(){
 
     const rows = westbound.map(x=>{
       const etaSec = toEtaSeconds(x.timeToStation);
-      const eta = formatEtaText(etaSec, formatClockTime(toDate(x.expectedArrival)));
+      const eta = formatEtaText(etaSec);
       return rowHtml({
         line: "Piccadilly",
         dest: (x.destinationName || "").replace(/ Underground Station/i, ""),
