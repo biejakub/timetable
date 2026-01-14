@@ -6,18 +6,6 @@
 <title>TfL Panel</title>
 
 <style>
-:root{
-  --eta-border: rgba(0, 0, 0, 0.35);
-  --eta-shadow: rgba(0, 0, 0, 0.25);
-}
-
-@media (prefers-color-scheme: dark){
-  :root{
-    --eta-border: rgba(0, 0, 0, 0.6);
-    --eta-shadow: rgba(0, 0, 0, 0.5);
-  }
-}
-
 body{
   margin:0; background:#000; color:#fff; font-family:sans-serif;
   min-height:100vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
@@ -50,19 +38,10 @@ body{
 
 .eta{ font-weight:700; white-space:nowrap; }
 
-.eta-badge{
-  padding:2px 12px;
-  border-radius:999px;
-  background:var(--eta-bg);
-  color:var(--eta-text);
-  border:1px solid var(--eta-border);
-  box-shadow:0 1px 2px var(--eta-shadow);
-}
-
-.eta-red{ --eta-bg:#ff4b4b; --eta-text:#111; }
-.eta-yellow{ --eta-bg:#ffd54d; --eta-text:#111; }
-.eta-green{ --eta-bg:#4cff4c; --eta-text:#111; }
-.eta-blue{ --eta-bg:#45a9ff; --eta-text:#111; }
+.eta-red{ color:#ff4b4b; }
+.eta-yellow{ color:#ffd54d; }
+.eta-green{ color:#4cff4c; }
+.eta-blue{ color:#45a9ff; }
 
 .subline{ font-size:26px; color:#9a9a9a; line-height:1.25; padding-bottom:4px; }
 
@@ -147,7 +126,6 @@ const MAX_ITEMS = 5;
 const ETA_WALK_MIN = { train: 8, tube: 12, bus: 4 };
 const ETA_BUFFER_MIN = { train: 4, tube: 4, bus: 2 };
 const ETA_RED_SEC = 60;
-const ETA_BLUE_MIN = 20;
 
 const BUS_STOP_ID  = "490010277W";
 const BUS_PRIMARY  = "221";
@@ -274,20 +252,34 @@ function parseCacheTtlSeconds(headers){
   return 0;
 }
 
+function formatHHMMFromNow(etaSec){
+  const d = new Date(Date.now() + (etaSec * 1000));
+  return d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+}
+
 function formatEtaText(etaSec){
   if (etaSec === null) return "--";
   if (etaSec < ETA_RED_SEC) return "Due";
-  return `${mins(etaSec)} min`;
+
+  // < 60 min -> minuty
+  if (etaSec < 60 * 60) return `${mins(etaSec)} min`;
+
+  // >= 60 min -> HH:MM
+  return formatHHMMFromNow(etaSec);
 }
 
 function getEtaClass(etaSec, transportType){
   if (etaSec === null) return "eta-blue";
   if (etaSec < ETA_RED_SEC) return "eta-red";
-  if (etaSec >= ETA_BLUE_MIN * 60) return "eta-blue";
+
+  // >= 60 min -> HH:MM -> blue
+  if (etaSec >= 60 * 60) return "eta-blue";
+
   const walkMin = ETA_WALK_MIN[transportType] ?? 0;
   const walkSec = walkMin * 60;
   const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
   const bufferSec = bufferMin * 60;
+
   if (etaSec >= walkSec + bufferSec) return "eta-green";
   return "eta-yellow";
 }
@@ -327,7 +319,7 @@ function hhmmToDate(runDate, hhmm){
 }
 
 function rowHtml({ line, dest, etaText, etaClass, subline }){
-  const cls = ["eta", "eta-badge", etaClass].filter(Boolean).join(" ");
+  const cls = ["eta", etaClass].filter(Boolean).join(" ");
 
   return `
     <div class="row">
