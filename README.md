@@ -162,7 +162,8 @@ Legend:
 
 Accessibility:
 - ETA is rendered as plain coloured text (no background or border),
-  designed to remain readable on both dark and light backgrounds.
+  designed for dark backgrounds (kiosk/wall display).
+  For light theme, adjust background/colors
 
 ## Fair-use and best practice
 - The proxy honors `Cache-Control`, `Age`, and `Expires`.
