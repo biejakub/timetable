@@ -275,9 +275,9 @@ function parseCacheTtlSeconds(headers){
 }
 
 function formatEtaText(etaSec){
-  if (etaSec === null) return { text: "--" };
-  if (etaSec < ETA_RED_SEC) return { text: "Due" };
-  return { text: `${mins(etaSec)} min` };
+  if (etaSec === null) return "--";
+  if (etaSec < ETA_RED_SEC) return "Due";
+  return `${mins(etaSec)} min`;
 }
 
 function getEtaClass(etaSec, transportType){
@@ -372,7 +372,7 @@ async function loadRail(){
       .map(s=>{
         const dep = hhmmToDate(s.runDate, s.etd || s.std);
         const etaSec = dep ? Math.max(0, Math.floor((dep - new Date()) / 1000)) : null;
-        const eta = formatEtaText(etaSec);
+        const etaText = formatEtaText(etaSec);
         const viaCodes = Array.isArray(s.via) ? s.via : (s.via ? [s.via] : []);
         const viaNames = viaCodes.map(code => (
           code === "HHY" ? "Highbury & Islington"
@@ -382,7 +382,7 @@ async function loadRail(){
         return rowHtml({
           line: s.operator || "Train",
           dest: s.destination || "-",
-          etaText: eta.text,
+          etaText,
           etaClass: getEtaClass(etaSec, "train"),
           subline: `${s.platform ? `Platform ${s.platform}` : "Platform -"}${viaLabel ? ` (${viaLabel})` : ""}`
         });
@@ -426,11 +426,11 @@ async function loadBus(){
 
     const rows = combined.map(x=>{
       const etaSec = toEtaSeconds(x.timeToStation);
-      const eta = formatEtaText(etaSec);
+      const etaText = formatEtaText(etaSec);
       return rowHtml({
         line: x.lineName,
         dest: x.destinationName || "",
-        etaText: eta.text,
+        etaText,
         etaClass: getEtaClass(etaSec, "bus"),
         subline: null
       });
@@ -470,11 +470,11 @@ async function loadTube(){
 
     const rows = westbound.map(x=>{
       const etaSec = toEtaSeconds(x.timeToStation);
-      const eta = formatEtaText(etaSec);
+      const etaText = formatEtaText(etaSec);
       return rowHtml({
         line: "Piccadilly",
         dest: (x.destinationName || "").replace(/ Underground Station/i, ""),
-        etaText: eta.text,
+        etaText,
         etaClass: getEtaClass(etaSec, "tube"),
         subline: "Westbound"
       });
