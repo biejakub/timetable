@@ -123,8 +123,8 @@ const REFRESH_FALLBACK_MS = 60_000;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_ITEMS = 5;
 
-const ETA_WALK_MIN = { train: 8, tube: 12, bus: 4 };
-const ETA_BUFFER_MIN = { train: 4, tube: 4, bus: 2 };
+const ETA_WALK_MIN = { train: 9, tube: 13, bus: 5 };
+const ETA_BUFFER_MIN = { train: 5, tube: 5, bus: 5 };
 const ETA_RED_SEC = 60;
 
 const BUS_STOP_ID  = "490010277W";
@@ -261,10 +261,10 @@ function formatEtaText(etaSec){
   if (etaSec === null) return "--";
   if (etaSec <= ETA_RED_SEC) return "Due";
 
-  // <= 30 min -> minuty
-  if (etaSec <= 30 * 60) return `${mins(etaSec)} min`;
+  // <= 30:59 -> minuty
+  if (etaSec < 31 * 60) return `${mins(etaSec)} min`;
 
-  // > 30 min -> HH:MM
+  // >= 31:00 -> HH:MM
   return formatHHMMFromNow(etaSec);
 }
 
@@ -272,17 +272,15 @@ function getEtaClass(etaSec, transportType){
   if (etaSec === null) return "";
   if (etaSec <= ETA_RED_SEC) return "eta-red";
 
-  // > 30 min -> HH:MM -> default (no color class)
-  if (etaSec > 30 * 60) return "";
+  // >= 31:00 -> HH:MM -> default (no color class)
+  if (etaSec >= 31 * 60) return "";
 
   const walkMin = ETA_WALK_MIN[transportType] ?? 0;
-  const walkSec = walkMin * 60;
   const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
-  const bufferSec = bufferMin * 60;
 
-  const thresholdSec = walkSec + bufferSec;
-  if (etaSec < thresholdSec) return "eta-yellow";
-  if (etaSec === thresholdSec) return "eta-green";
+  const minsToDeparture = Math.floor(etaSec / 60);
+  if (minsToDeparture < walkMin) return "eta-yellow";
+  if (minsToDeparture <= walkMin + bufferMin) return "eta-green";
   return "eta-blue";
 }
 

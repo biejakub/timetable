@@ -140,26 +140,25 @@ fall back to in-memory per process.
 ## Colour legend (ETA)
 The UI shows:
 - `Due` for departures under 60 seconds
-- `X min` for departures under 60 minutes
-- Absolute time (`HH:MM`) for departures 60 minutes or later
+- `X min` for departures under 31 minutes
+- Absolute time (`HH:MM`) for departures 31 minutes or later
 
 Colours are based on time-to-departure vs walking time for each mode.
 
 Walk times:
-- Train (Alexandra Palace): 8 min
-- Tube (Bounds Green): 12 min
-- Bus: 4 min
+- Train (Alexandra Palace): 9 min
+- Tube (Bounds Green): 13 min
+- Bus: 5 min
 
 Buffer:
-- Train / Tube: 4 min
-- Bus: 2 min
+- Train / Tube / Bus: 5 min
 
 Legend:
 - Red: ETA ≤ 60 s (`Due`)
-- Yellow: ETA < walk_time + buffer and > 60 s (tight window)
-- Green: ETA = walk_time + buffer
-- Blue: ETA > walk_time + buffer and ≤ 30 min
-- Default (no color): ETA ≥ 31 min (HH:MM)
+- Yellow: ETA > 60 s and < walk_time
+- Green: ETA ≥ walk_time and ≤ walk_time + buffer (inclusive, up to `:59`)
+- Blue: ETA > walk_time + buffer and ≤ 30:59
+- Default (no color): ETA ≥ 31:00 (HH:MM)
 
 Accessibility:
 - ETA is rendered as plain coloured text (no background or border),
