@@ -193,9 +193,16 @@ function renderMessage(id, msg){
   el.textContent = msg;
 }
 
+function alignDelayToMinute(delayMs){
+  const now = Date.now();
+  const target = now + Math.max(0, delayMs);
+  const nextMinute = Math.ceil(target / 60000) * 60000;
+  return Math.max(0, nextMinute - now);
+}
+
 function schedule(name, fn, delayMs){
   clearTimeout(timers[name]);
-  timers[name] = setTimeout(fn, delayMs);
+  timers[name] = setTimeout(fn, alignDelayToMinute(delayMs));
 }
 
 function nextDelayFromTtl(ttlSec){
