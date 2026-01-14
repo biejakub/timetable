@@ -155,10 +155,11 @@ Buffer:
 - Bus: 2 min
 
 Legend:
-- Red: ETA < 60 s (`Due`)
-- Yellow: ETA < walk_time + buffer and ≥ 60 s (tight window)
-- Green: ETA ≥ walk_time + buffer and < 60 min (comfortably on time)
-- Blue: ETA ≥ 60 min (informational / later, shown as HH:MM)
+- Red: ETA ≤ 60 s (`Due`)
+- Yellow: ETA < walk_time + buffer and > 60 s (tight window)
+- Green: ETA = walk_time + buffer
+- Blue: ETA > walk_time + buffer and ≤ 30 min
+- Default (no color): ETA ≥ 31 min (HH:MM)
 
 Accessibility:
 - ETA is rendered as plain coloured text (no background or border),

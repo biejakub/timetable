@@ -259,29 +259,31 @@ function formatHHMMFromNow(etaSec){
 
 function formatEtaText(etaSec){
   if (etaSec === null) return "--";
-  if (etaSec < ETA_RED_SEC) return "Due";
+  if (etaSec <= ETA_RED_SEC) return "Due";
 
-  // < 60 min -> minuty
-  if (etaSec < 60 * 60) return `${mins(etaSec)} min`;
+  // <= 30 min -> minuty
+  if (etaSec <= 30 * 60) return `${mins(etaSec)} min`;
 
-  // >= 60 min -> HH:MM
+  // > 30 min -> HH:MM
   return formatHHMMFromNow(etaSec);
 }
 
 function getEtaClass(etaSec, transportType){
-  if (etaSec === null) return "eta-blue";
-  if (etaSec < ETA_RED_SEC) return "eta-red";
+  if (etaSec === null) return "";
+  if (etaSec <= ETA_RED_SEC) return "eta-red";
 
-  // >= 60 min -> HH:MM -> blue
-  if (etaSec >= 60 * 60) return "eta-blue";
+  // > 30 min -> HH:MM -> default (no color class)
+  if (etaSec > 30 * 60) return "";
 
   const walkMin = ETA_WALK_MIN[transportType] ?? 0;
   const walkSec = walkMin * 60;
   const bufferMin = ETA_BUFFER_MIN[transportType] ?? 0;
   const bufferSec = bufferMin * 60;
 
-  if (etaSec >= walkSec + bufferSec) return "eta-green";
-  return "eta-yellow";
+  const thresholdSec = walkSec + bufferSec;
+  if (etaSec < thresholdSec) return "eta-yellow";
+  if (etaSec === thresholdSec) return "eta-green";
+  return "eta-blue";
 }
 
 async function fetchJsonWithMeta(url){
