@@ -17,13 +17,13 @@ body{
   border-bottom:2px solid #111;
   display:flex; justify-content:space-between; align-items:center;
 }
-#topDay{ font-size:52px; font-weight:600; letter-spacing:.5px; }
-#topDate,#lastUpdate{ font-size:24px; color:#9a9a9a; }
-#topTime{ font-size:72px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
+#topDay{ font-size:48px; font-weight:600; letter-spacing:.5px; }
+#topDate,#lastUpdate{ font-size:26px; color:#9a9a9a; }
+#topTime{ font-size:68px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
 
 .wrap{ padding:26px 60px 30px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
-.title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+.title{ font-size:54px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
 .title-right{ display:flex; gap:10px; align-items:center; }
 .subtitle{ font-size:26px; opacity:.7; margin:0 0 18px 0; }
 
@@ -31,7 +31,7 @@ body{
 .row{ padding:8px 0; border-bottom:1px solid #111; }
 .row:last-child{ border-bottom:none; }
 
-.topline{ display:flex; justify-content:space-between; align-items:baseline; font-size:44px; line-height:1.25; }
+.topline{ display:flex; justify-content:space-between; align-items:baseline; font-size:40px; line-height:1.25; }
 .left{ display:flex; gap:14px; min-width:0; }
 .line{ white-space:nowrap; font-weight:600; }
 .pipe{ opacity:.6; }
@@ -54,6 +54,7 @@ body{
 }
 .pill.live{ animation:livePulse 3.8s ease-in-out infinite; }
 .pill.delay{ color:#ff4b4b; border-color:#3a1212; }
+.pill.hidden{ display:none; }
 @keyframes livePulse{
   0%,100%{ opacity:.75; transform:scale(1); }
   50%{ opacity:1; transform:scale(1.04); }
@@ -66,7 +67,7 @@ body{
 }
 
 .muted{ opacity:.65; }
-.bigmsg{ font-size:34px; opacity:.8; padding:8px 0; }
+.bigmsg{ font-size:30px; opacity:.8; padding:8px 0; }
 </style>
 </head>
 
@@ -109,7 +110,7 @@ body{
     <div class="title">
       <span>Bounds Green</span>
       <div class="title-right">
-        <span id="tubeLineStatus" class="pill muted">status...</span>
+        <span id="tubeLineStatus" class="pill muted hidden">status...</span>
         <span id="tubeStatus" class="pill muted">refreshing...</span>
       </div>
     </div>
@@ -193,12 +194,21 @@ function isDelayText(text){
   return /delay/i.test(String(text || ""));
 }
 
-function setLineStatus(text, reason){
+function setLineStatus(status, lineName, reason){
   if (!tubeLineStatus) return;
-  const label = text ? String(text) : "Status unavailable";
+  const statusText = status ? String(status) : "";
+  const isUnknown = !statusText || /^unknown$/i.test(statusText);
+  if (isUnknown){
+    tubeLineStatus.classList.add("hidden");
+    tubeLineStatus.removeAttribute("title");
+    return;
+  }
+  const nameText = lineName ? String(lineName) : "Line";
+  const label = `${nameText}: ${statusText}`;
   const delayed = isDelayText(label) || isDelayText(reason);
   tubeLineStatus.textContent = label;
-  tubeLineStatus.classList.toggle("muted", !text);
+  tubeLineStatus.classList.remove("hidden");
+  tubeLineStatus.classList.remove("muted");
   tubeLineStatus.classList.toggle("delay", delayed);
   if (reason){
     tubeLineStatus.title = String(reason);
@@ -539,13 +549,12 @@ async function loadTubeStatus(){
     const status = typeof data.status === "string" ? data.status : "";
     const reason = typeof data.reason === "string" ? data.reason : "";
     const lineName = typeof data.line_name === "string" ? data.line_name : "Line";
-    const label = status ? `${lineName}: ${status}` : "";
-    setLineStatus(label, reason);
+    setLineStatus(status, lineName, reason);
     resetBackoff("tubeLine");
     schedule("tubeLine", loadTubeStatus, nextDelayFromTtl(ttlSec));
     setLastUpdate(fetchedAt);
   }catch(err){
-    setLineStatus("", "");
+    setLineStatus("", "", "");
     schedule("tubeLine", loadTubeStatus, backoffDelay("tubeLine", err.retryAfterSec));
   }
 }
