@@ -2,6 +2,7 @@
 # RTT + TfL proxy for the dashboard.
 
 from collections import deque
+from collections.abc import Mapping as MappingABC
 import datetime
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -780,23 +781,34 @@ def compact_reason(value: Optional[str]) -> Optional[str]:
 
 def extract_tfl_line_status(data: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     line_obj: Optional[Mapping[str, Any]] = None
-    if isinstance(data, list) and data:
-        if isinstance(data[0], Mapping):
-            line_obj = data[0]
-    elif isinstance(data, Mapping):
-        line_obj = data
+    if isinstance(data, list):
+        data_list: List[Any] = data
+        if data_list:
+            first: Any = data_list[0]
+            if isinstance(first, MappingABC):
+                line_obj = cast(Mapping[str, Any], first)
+    elif isinstance(data, MappingABC):
+        line_obj = cast(Mapping[str, Any], data)
     if not line_obj:
         return None, None, None
 
-    line_name = cast(Optional[str], line_obj.get("name") or line_obj.get("lineName"))
-    statuses = line_obj.get("lineStatuses") or []
-    if not isinstance(statuses, list) or not statuses:
+    line_name_raw: Any = line_obj.get("name") or line_obj.get("lineName")
+    line_name = line_name_raw if isinstance(line_name_raw, str) else None
+
+    statuses_raw: Any = line_obj.get("lineStatuses")
+    statuses_list: List[Any] = statuses_raw if isinstance(statuses_raw, list) else []
+    if not statuses_list:
         return None, None, line_name
-    status_obj = statuses[0]
-    if not isinstance(status_obj, Mapping):
+    status_obj_raw: Any = statuses_list[0]
+    if not isinstance(status_obj_raw, MappingABC):
         return None, None, line_name
-    status_desc = cast(Optional[str], status_obj.get("statusSeverityDescription"))
-    reason = compact_reason(cast(Optional[str], status_obj.get("reason")))
+    status_obj = cast(Mapping[str, Any], status_obj_raw)
+
+    status_raw: Any = status_obj.get("statusSeverityDescription")
+    status_desc = status_raw if isinstance(status_raw, str) else None
+    reason_raw: Any = status_obj.get("reason")
+    reason_text = reason_raw if isinstance(reason_raw, str) else None
+    reason = compact_reason(reason_text)
     return status_desc, reason, line_name
 
 
