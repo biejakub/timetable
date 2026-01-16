@@ -779,14 +779,19 @@ def compact_reason(value: Optional[str]) -> Optional[str]:
     return compacted
 
 
+def as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return cast(List[Any], value)
+    return []
+
+
 def extract_tfl_line_status(data: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     line_obj: Optional[Mapping[str, Any]] = None
-    if isinstance(data, list):
-        data_list: List[Any] = data
-        if data_list:
-            first: Any = data_list[0]
-            if isinstance(first, MappingABC):
-                line_obj = cast(Mapping[str, Any], first)
+    data_list = as_list(data)
+    if data_list:
+        first: Any = data_list[0]
+        if isinstance(first, MappingABC):
+            line_obj = cast(Mapping[str, Any], first)
     elif isinstance(data, MappingABC):
         line_obj = cast(Mapping[str, Any], data)
     if not line_obj:
@@ -796,7 +801,7 @@ def extract_tfl_line_status(data: Any) -> Tuple[Optional[str], Optional[str], Op
     line_name = line_name_raw if isinstance(line_name_raw, str) else None
 
     statuses_raw: Any = line_obj.get("lineStatuses")
-    statuses_list: List[Any] = statuses_raw if isinstance(statuses_raw, list) else []
+    statuses_list = as_list(statuses_raw)
     if not statuses_list:
         return None, None, line_name
     status_obj_raw: Any = statuses_list[0]
