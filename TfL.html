@@ -19,7 +19,7 @@ body{
 }
 #topDay{ font-size:48px; font-weight:600; letter-spacing:.5px; }
 #topDate,#lastUpdate{ font-size:26px; color:#9a9a9a; }
-#topTime{ font-size:68px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
+#topTime{ font-size:48px; font-weight:600; letter-spacing:1px; line-height:1; text-align:right; }
 
 .wrap{ padding:26px 60px 30px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
@@ -571,7 +571,7 @@ const EN_DAYS = [
 
 function updateClock(){
   const d = new Date();
-  topDay.textContent = EN_DAYS[d.getDay()];
+  topDay.textContent = EN_DAYS[d.getDay()].toUpperCase();
   topDate.textContent = d.toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'numeric'});
   topTime.textContent = d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
@@ -579,7 +579,7 @@ function updateClock(){
 function setLastUpdate(ts){
   const t = Number.isFinite(ts) ? new Date(ts) : new Date();
   lastUpdate.textContent =
-    "Last update: " +
+    "Updated: " +
     t.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
