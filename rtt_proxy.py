@@ -137,6 +137,44 @@ APP_PORT = env_int("APP_PORT", 5010)
 
 TFL_LINE_ID_RE = re.compile(r"^[a-z0-9-]{2,32}$")
 TFL_STOP_ID_RE = re.compile(r"^[A-Za-z0-9]{3,20}$")
+HHMM_RE = re.compile(r"^\d{4}$")
+
+
+def normalize_hhmm(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    value = value.strip()
+    if not HHMM_RE.match(value):
+        return None
+    hours = int(value[:2])
+    minutes = int(value[2:])
+    if hours > 23 or minutes > 59:
+        return None
+    return value
+
+
+def compute_delay_minutes(std: Optional[str], etd: Optional[str]) -> Optional[int]:
+    std_norm = normalize_hhmm(std)
+    etd_norm = normalize_hhmm(etd)
+    if not std_norm or not etd_norm:
+        return None
+    std_min = int(std_norm[:2]) * 60 + int(std_norm[2:])
+    etd_min = int(etd_norm[:2]) * 60 + int(etd_norm[2:])
+    delay = etd_min - std_min
+    if delay < -720:
+        delay += 1440
+    elif delay > 720:
+        delay -= 1440
+    if delay <= 0:
+        return None
+    return delay
+
+
+def is_delayed_display_as(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    token = value.strip().upper()
+    return token == "LATE" or "DELAY" in token
 
 JsonDict = Dict[str, Any]
 
@@ -729,6 +767,39 @@ def tfl_get_json(path: str) -> Tuple[Any, Mapping[str, str]]:
     )
 
 
+def compact_reason(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    compacted = " ".join(value.split())
+    if not compacted:
+        return None
+    if len(compacted) > 220:
+        return compacted[:217] + "..."
+    return compacted
+
+
+def extract_tfl_line_status(data: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    line_obj: Optional[Mapping[str, Any]] = None
+    if isinstance(data, list) and data:
+        if isinstance(data[0], Mapping):
+            line_obj = data[0]
+    elif isinstance(data, Mapping):
+        line_obj = data
+    if not line_obj:
+        return None, None, None
+
+    line_name = cast(Optional[str], line_obj.get("name") or line_obj.get("lineName"))
+    statuses = line_obj.get("lineStatuses") or []
+    if not isinstance(statuses, list) or not statuses:
+        return None, None, line_name
+    status_obj = statuses[0]
+    if not isinstance(status_obj, Mapping):
+        return None, None, line_name
+    status_desc = cast(Optional[str], status_obj.get("statusSeverityDescription"))
+    reason = compact_reason(cast(Optional[str], status_obj.get("reason")))
+    return status_desc, reason, line_name
+
+
 def add_cache_headers(resp: Response, ttl_sec: int, stale_sec: int) -> Response:
     cache_control = f"max-age={ttl_sec}"
     if stale_sec > 0:
@@ -902,7 +973,8 @@ def fetch_trains_entry(now_expiry: float, now_mono: float) -> CacheEntry:
             continue
 
         ld: LocationDetail = s.get("locationDetail") or {}
-        is_cancelled = ld.get("displayAs") in ("CANCELLED_CALL", "CANCELLED_PASS")
+        display_as = (ld.get("displayAs") or "").upper()
+        is_cancelled = display_as in ("CANCELLED_CALL", "CANCELLED_PASS")
 
         dests: List[Destination] = ld.get("destination") or []
         if dests:
@@ -912,10 +984,21 @@ def fetch_trains_entry(now_expiry: float, now_mono: float) -> CacheEntry:
             dest_name = "-"
 
         std = ld.get("gbttBookedDeparture")
+        realtime_dep = ld.get("realtimeDeparture")
+        delay_min = compute_delay_minutes(std, realtime_dep)
+        is_delayed = (
+            is_delayed_display_as(display_as)
+            or is_delayed_display_as(realtime_dep)
+            or delay_min is not None
+        )
         if is_cancelled:
+            is_delayed = False
+            delay_min = None
             etd = "Anulowane"
         else:
-            etd = ld.get("realtimeDeparture") or std
+            etd = normalize_hhmm(realtime_dep)
+            if etd is None and not is_delayed:
+                etd = std
 
         services_out.append(
             {
@@ -927,6 +1010,8 @@ def fetch_trains_entry(now_expiry: float, now_mono: float) -> CacheEntry:
                 "operator": s.get("atocName"),
                 "trainId": s.get("trainIdentity"),
                 "cancelled": is_cancelled,
+                "delayed": is_delayed,
+                "delay_min": delay_min,
                 "via": list(via),
             }
         )
@@ -1038,6 +1123,32 @@ def fetch_tfl(path: str) -> CacheEntry:
     return fetch_tfl_entry(time.monotonic(), path)
 
 
+def fetch_tfl_status_entry(now_expiry: float, line_id: str) -> CacheEntry:
+    data, headers = tfl_get_json(f"/Line/{line_id}/Status")
+    ttl_sec = compute_ttl(headers, TFL_CACHE_MIN_TTL_SEC)
+    status_desc, reason, line_name = extract_tfl_line_status(data)
+    payload: Dict[str, Any] = {
+        "data": {
+            "status": status_desc or "Unknown",
+            "reason": reason,
+            "line_name": line_name or line_id,
+        },
+        "fetched_at": utc_now_iso(),
+        "cache_ttl_sec": ttl_sec,
+    }
+    return CacheEntry(
+        data=payload,
+        expires_at=now_expiry + ttl_sec,
+        stale_until=now_expiry + ttl_sec + TFL_CACHE_STALE_SEC,
+        fetched_at=payload["fetched_at"],
+        ttl_sec=ttl_sec,
+    )
+
+
+def fetch_tfl_status(line_id: str) -> CacheEntry:
+    return fetch_tfl_status_entry(time.monotonic(), line_id)
+
+
 def refresh_tfl_async_memory(cache_key: str, path: str) -> None:
     try:
         entry = fetch_tfl(path)
@@ -1107,6 +1218,82 @@ def get_tfl_cached(cache_key: str, path: str) -> CacheEntry:
     if get_redis_client() is not None:
         return get_tfl_cached_redis(cache_key, path)
     return get_tfl_cached_memory(cache_key, path)
+
+
+def refresh_tfl_status_async_memory(cache_key: str, line_id: str) -> None:
+    try:
+        entry = fetch_tfl_status(line_id)
+        with _tfl_lock:
+            _tfl_cache[cache_key] = entry
+    except Exception as exc:
+        log.warning("TfL status refresh failed: %s", exc)
+    finally:
+        with _tfl_lock:
+            _tfl_refreshing.discard(cache_key)
+
+
+def get_tfl_status_cached_memory(cache_key: str, line_id: str) -> CacheEntry:
+    now = time.monotonic()
+    with _tfl_lock:
+        entry = _tfl_cache.get(cache_key)
+        if entry and now < entry.expires_at:
+            return entry
+        if entry and now < entry.stale_until:
+            if cache_key not in _tfl_refreshing:
+                _tfl_refreshing.add(cache_key)
+                threading.Thread(
+                    target=refresh_tfl_status_async_memory,
+                    args=(cache_key, line_id),
+                    daemon=True,
+                ).start()
+            return entry
+
+    entry = fetch_tfl_status(line_id)
+    with _tfl_lock:
+        _tfl_cache[cache_key] = entry
+    return entry
+
+
+def refresh_tfl_status_async_redis(cache_key: str, line_id: str, lock_key: str) -> None:
+    try:
+        entry = fetch_tfl_status_entry(time.time(), line_id)
+        redis_set_cache_entry(redis_cache_key("tfl", cache_key), entry)
+    except Exception as exc:
+        log.warning("TfL status refresh failed: %s", exc)
+    finally:
+        client = get_redis_client()
+        if client is not None:
+            try:
+                client.delete(lock_key)
+            except Exception as exc:
+                log.warning("Redis lock release failed: %s", exc)
+
+
+def get_tfl_status_cached_redis(cache_key: str, line_id: str) -> CacheEntry:
+    cache_key_full = redis_cache_key("tfl", cache_key)
+    lock_key = redis_lock_key("tfl", cache_key)
+    now = time.time()
+    entry = redis_get_cache_entry(cache_key_full)
+    if entry and now < entry.expires_at:
+        return entry
+    if entry and now < entry.stale_until:
+        if acquire_redis_lock(lock_key):
+            threading.Thread(
+                target=refresh_tfl_status_async_redis,
+                args=(cache_key, line_id, lock_key),
+                daemon=True,
+            ).start()
+        return entry
+    entry = fetch_tfl_status_entry(now, line_id)
+    redis_set_cache_entry(cache_key_full, entry)
+    return entry
+
+
+def get_tfl_status_cached(line_id: str) -> CacheEntry:
+    cache_key = f"status:{line_id}"
+    if get_redis_client() is not None:
+        return get_tfl_status_cached_redis(cache_key, line_id)
+    return get_tfl_status_cached_memory(cache_key, line_id)
 
 
 @app.route("/api/trains", methods=["GET", "OPTIONS"])
@@ -1220,6 +1407,47 @@ def tfl_line_arrivals(line_id: str, stop_id: str) -> Response:
 
     try:
         entry = get_tfl_cached(cache_key, path)
+    except OutboundRateLimited as exc:
+        return error_response(
+            503,
+            "outbound_rate_limited",
+            "Outbound TfL limit exceeded",
+            empty_key="data",
+            retry_after=exc.retry_after,
+        )
+    except UpstreamRateLimited as exc:
+        return error_response(
+            503,
+            "upstream_rate_limited",
+            "TfL rate limited",
+            empty_key="data",
+            retry_after=exc.retry_after,
+        )
+    except UpstreamError as exc:
+        return error_response(502, "upstream_error", str(exc), empty_key="data")
+    except Exception:
+        return error_response(500, "internal_error", "Unexpected error", empty_key="data")
+
+    resp = jsonify(entry.data)
+    return add_cache_headers(resp, entry.ttl_sec, TFL_CACHE_STALE_SEC)
+
+
+@app.route("/api/tfl/line/<line_id>/status", methods=["GET", "OPTIONS"])
+def tfl_line_status(line_id: str) -> Response:
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+
+    line_id = line_id.lower()
+    if not is_valid_tfl_line_id(line_id):
+        return error_response(
+            400,
+            "invalid_parameter",
+            "Invalid line_id",
+            empty_key="data",
+        )
+
+    try:
+        entry = get_tfl_status_cached(line_id)
     except OutboundRateLimited as exc:
         return error_response(
             503,

@@ -24,6 +24,7 @@ body{
 .wrap{ padding:26px 60px 30px; display:grid; gap:24px; }
 .card{ border:2px solid #222; border-radius:18px; padding:22px 26px; background:#050505; }
 .title{ font-size:58px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+.title-right{ display:flex; gap:10px; align-items:center; }
 .subtitle{ font-size:26px; opacity:.7; margin:0 0 18px 0; }
 
 .list{ display:flex; flex-direction:column; gap:10px; }
@@ -42,6 +43,7 @@ body{
 .eta-yellow{ color:#ffd54d; }
 .eta-green{ color:#4cff4c; }
 .eta-blue{ color:#45a9ff; }
+.delay-text{ color:#ff4b4b; }
 
 .subline{ font-size:26px; color:#9a9a9a; line-height:1.25; padding-bottom:4px; }
 
@@ -51,6 +53,7 @@ body{
   display:inline-block;
 }
 .pill.live{ animation:livePulse 3.8s ease-in-out infinite; }
+.pill.delay{ color:#ff4b4b; border-color:#3a1212; }
 @keyframes livePulse{
   0%,100%{ opacity:.75; transform:scale(1); }
   50%{ opacity:1; transform:scale(1.04); }
@@ -105,7 +108,10 @@ body{
   <section class="card">
     <div class="title">
       <span>Bounds Green</span>
-      <span id="tubeStatus" class="pill muted">refreshing...</span>
+      <div class="title-right">
+        <span id="tubeLineStatus" class="pill muted">status...</span>
+        <span id="tubeStatus" class="pill muted">refreshing...</span>
+      </div>
     </div>
     <div class="subtitle">Next Underground services via Finsbury Park (towards central)</div>
     <div id="tubeList" class="list muted">Loading data...</div>
@@ -138,6 +144,7 @@ const TUBE_STOP_ID = "940GZZLUBDS";
 const RTT_URL = `${API_BASE}/api/trains`;
 const BUS_URL = `${API_BASE}/api/tfl/stop/${BUS_STOP_ID}/arrivals`;
 const TUBE_URL = `${API_BASE}/api/tfl/line/${TUBE_LINE_ID}/arrivals/${TUBE_STOP_ID}`;
+const TUBE_STATUS_URL = `${API_BASE}/api/tfl/line/${TUBE_LINE_ID}/status`;
 
 const BACKOFF_BASE_MS = 2000;
 const BACKOFF_MAX_MS = 120_000;
@@ -151,9 +158,10 @@ const railList = document.getElementById("railList");
 const railFallback = document.getElementById("railFallback");
 const busList = document.getElementById("busList");
 const tubeList = document.getElementById("tubeList");
+const tubeLineStatus = document.getElementById("tubeLineStatus");
 
-const timers = { rail: null, bus: null, tube: null };
-const backoff = { rail: 0, bus: 0, tube: 0 };
+const timers = { rail: null, bus: null, tube: null, tubeLine: null };
+const backoff = { rail: 0, bus: 0, tube: 0, tubeLine: 0 };
 
 const esc = v => String(v ?? "").replace(/[&<>"']/g, m => ({
   "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
@@ -179,6 +187,24 @@ function setStatus(id, ok){
   el.textContent = ok ? "live" : "no data";
   el.classList.toggle("muted", !ok);
   el.classList.toggle("live", ok);
+}
+
+function isDelayText(text){
+  return /delay/i.test(String(text || ""));
+}
+
+function setLineStatus(text, reason){
+  if (!tubeLineStatus) return;
+  const label = text ? String(text) : "Status unavailable";
+  const delayed = isDelayText(label) || isDelayText(reason);
+  tubeLineStatus.textContent = label;
+  tubeLineStatus.classList.toggle("muted", !text);
+  tubeLineStatus.classList.toggle("delay", delayed);
+  if (reason){
+    tubeLineStatus.title = String(reason);
+  } else {
+    tubeLineStatus.removeAttribute("title");
+  }
 }
 
 function renderRows(id, rows){
@@ -315,14 +341,21 @@ async function fetchJsonWithMeta(url){
 
 function hhmmToDate(runDate, hhmm){
   if(!runDate || !hhmm) return null;
+  const text = String(hhmm).trim();
+  if (!/^\d{4}$/.test(text)) return null;
+  const hours = Number(text.slice(0,2));
+  const minutes = Number(text.slice(2,4));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+    return null;
+  }
   const d = new Date(runDate+"T00:00:00");
-  d.setHours(Number(hhmm.slice(0,2)), Number(hhmm.slice(2,4)));
+  d.setHours(hours, minutes, 0, 0);
   const now = new Date();
   if (d.getTime() < now.getTime() - 6*3600*1000) d.setDate(d.getDate()+1);
   return d;
 }
 
-function rowHtml({ line, dest, etaText, etaClass, subline }){
+function rowHtml({ line, dest, etaText, etaClass, sublineHtml }){
   const cls = ["eta", etaClass].filter(Boolean).join(" ");
 
   return `
@@ -335,7 +368,7 @@ function rowHtml({ line, dest, etaText, etaClass, subline }){
         </div>
         <div class="${cls}">${esc(etaText)}</div>
       </div>
-      ${subline ? `<div class="subline">${esc(subline)}</div>` : ""}
+      ${sublineHtml ? `<div class="subline">${sublineHtml}</div>` : ""}
     </div>
   `;
 }
@@ -366,21 +399,33 @@ async function loadRail(){
       })
       .slice(0, MAX_ITEMS)
       .map(s=>{
-        const dep = hhmmToDate(s.runDate, s.etd || s.std);
+        const etdTime = hhmmToDate(s.runDate, s.etd);
+        const stdTime = hhmmToDate(s.runDate, s.std);
+        const dep = etdTime ?? (s.delayed ? null : stdTime);
         const etaSec = dep ? Math.max(0, Math.floor((dep - new Date()) / 1000)) : null;
-        const etaText = formatEtaText(etaSec);
+        let etaText = formatEtaText(etaSec);
+        let etaClass = getEtaClass(etaSec, "train");
+        if (s.delayed && !dep){
+          etaText = "Delayed";
+          etaClass = "eta-red";
+        }
         const viaCodes = Array.isArray(s.via) ? s.via : (s.via ? [s.via] : []);
         const viaNames = viaCodes.map(code => (
           code === "HHY" ? "Highbury & Islington"
           : (code === "FPK" ? "Finsbury Park" : code)
         ));
         const viaLabel = viaNames.length ? `via ${viaNames.join(" and ")}` : "";
+        const delayMin = Number.isFinite(Number(s.delay_min)) ? Number(s.delay_min) : null;
+        const delayLabel = s.delayed ? (delayMin ? `Delayed ${delayMin} min` : "Delayed") : "";
+        const platformLabel = s.platform ? `Platform ${s.platform}` : "Platform -";
+        const viaSuffix = viaLabel ? ` (${viaLabel})` : "";
+        const delaySuffix = delayLabel ? ` | <span class="delay-text">${esc(delayLabel)}</span>` : "";
         return rowHtml({
           line: s.operator || "Train",
           dest: s.destination || "-",
           etaText,
-          etaClass: getEtaClass(etaSec, "train"),
-          subline: `${s.platform ? `Platform ${s.platform}` : "Platform -"}${viaLabel ? ` (${viaLabel})` : ""}`
+          etaClass,
+          sublineHtml: `${esc(platformLabel)}${esc(viaSuffix)}${delaySuffix}`
         });
       });
 
@@ -428,7 +473,7 @@ async function loadBus(){
         dest: x.destinationName || "",
         etaText,
         etaClass: getEtaClass(etaSec, "bus"),
-        subline: null
+        sublineHtml: null
       });
     });
 
@@ -472,7 +517,7 @@ async function loadTube(){
         dest: (x.destinationName || "").replace(/ Underground Station/i, ""),
         etaText,
         etaClass: getEtaClass(etaSec, "tube"),
-        subline: "Westbound"
+        sublineHtml: esc("Westbound")
       });
     });
 
@@ -484,6 +529,24 @@ async function loadTube(){
     renderMessage("tubeList", "Tube data error.");
     setStatus("tubeStatus", false);
     schedule("tube", loadTube, backoffDelay("tube", err.retryAfterSec));
+  }
+}
+
+async function loadTubeStatus(){
+  try{
+    const { payload, ttlSec, fetchedAt } = await fetchJsonWithMeta(TUBE_STATUS_URL);
+    const data = payload?.data || {};
+    const status = typeof data.status === "string" ? data.status : "";
+    const reason = typeof data.reason === "string" ? data.reason : "";
+    const lineName = typeof data.line_name === "string" ? data.line_name : "Line";
+    const label = status ? `${lineName}: ${status}` : "";
+    setLineStatus(label, reason);
+    resetBackoff("tubeLine");
+    schedule("tubeLine", loadTubeStatus, nextDelayFromTtl(ttlSec));
+    setLastUpdate(fetchedAt);
+  }catch(err){
+    setLineStatus("", "");
+    schedule("tubeLine", loadTubeStatus, backoffDelay("tubeLine", err.retryAfterSec));
   }
 }
 
@@ -523,6 +586,7 @@ scheduleClockTick();
 loadRail();
 loadBus();
 loadTube();
+loadTubeStatus();
 </script>
 </body>
 </html>

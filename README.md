@@ -130,12 +130,17 @@ fall back to in-memory per process.
 ## Endpoints
 `GET /api/trains`
 - Departures from AAP with `via` as a list of CRS codes (ordered after AAP).
+- Each service includes `delayed` and `delay_min` (minutes) when available.
 - Response: `services`, `fetched_at`, `cache_ttl_sec`.
 
 `GET /api/tfl/stop/{stopId}/arrivals`
 `GET /api/tfl/line/{lineId}/arrivals/{stopId}`
 - TfL proxy data.
 - Response: `data`, `fetched_at`, `cache_ttl_sec`.
+
+`GET /api/tfl/line/{lineId}/status`
+- Line status/disruption summary.
+- Response: `data.status`, `data.reason`, `data.line_name`, `fetched_at`, `cache_ttl_sec`.
 
 ## Colour legend (ETA)
 The UI shows:
